@@ -18,7 +18,7 @@ class Config:
     Holds the configuration details for data cleaning,
     including directories for data storage and logging.
     """
-    BASE_DIR = os.environ.get('BASE_DIR')
+    BASE_DIR = os.getenv('BASE_DIR')
     LOG_DIR = os.path.join(BASE_DIR, "logs")
     current_date = datetime.now().strftime('%Y-%m-%d')
     DATA_DIR = os.path.join(BASE_DIR, f"collected_data_{current_date}")
