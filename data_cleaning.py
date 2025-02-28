@@ -7,6 +7,10 @@ import csv
 from functools import lru_cache
 from pathlib import Path
 import concurrent.futures
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class Config:
@@ -14,7 +18,7 @@ class Config:
     Holds the configuration details for data cleaning,
     including directories for data storage and logging.
     """
-    BASE_DIR = r"C:\DataCollection"
+    BASE_DIR = os.environ.get('BASE_DIR')
     LOG_DIR = os.path.join(BASE_DIR, "logs")
     current_date = datetime.now().strftime('%Y-%m-%d')
     DATA_DIR = os.path.join(BASE_DIR, f"collected_data_{current_date}")
@@ -33,6 +37,8 @@ class Config:
     
     @classmethod
     def validate(cls):
+        if not cls.BASE_DIR:
+            raise ValueError("Missing BASE_DIR in .env file")
         if not os.path.exists(cls.DATA_DIR):
             raise ValueError(f"Data directory {cls.DATA_DIR} does not exist.")
         os.makedirs(cls.LOG_DIR, exist_ok=True)
@@ -126,6 +132,7 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             return True
         
         # Create a new DataFrame to store expanded rows
+        
         expanded_rows = []
         
         # Process each row more efficiently
