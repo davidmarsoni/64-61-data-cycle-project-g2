@@ -1,81 +1,29 @@
-import importlib.util
-import subprocess
 import sys
 import logging
 import os
 from datetime import datetime
+import traceback
+from pathlib import Path
+import socket
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# Remove any existing handlers so that the logger can be reconfigured
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-def ensure_installed(package_name):
-    if importlib.util.find_spec(package_name) is None:
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install {package_name}: {e}")
-            sys.exit(1)
+# Import from config file
+from config import ensure_installed, Config
 
 # Ensure required packages are installed.
 ensure_installed('pysmb')
 ensure_installed('paramiko')
 ensure_installed('python-dotenv')
-ensure_installed('smtplib')  # For email functionality
+ensure_installed('chardet')
 
 from smb.SMBConnection import SMBConnection
 import paramiko
-import socket
-import traceback
-from pathlib import Path
-from dotenv import load_dotenv
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
-# Load environment variables from .env file
-load_dotenv()
-
-class Config:
-    """
-    Holds the configuration details for SMB and SFTP connections,
-    including directories for data storage and logging.
-    """
-    SMB_HOST = os.getenv('SMB_HOST')
-    SFTP_HOST = os.getenv('SFTP_HOST')
-    SFTP_PORT = int(os.getenv('SFTP_PORT'))
-    USERNAME = os.getenv('DATA_USERNAME')
-    PASSWORD = os.getenv('DATA_PASSWORD')
-
-    print(SMB_HOST)
-    print(SFTP_HOST)
-    print(SFTP_PORT)
-    print(USERNAME)
-    print(PASSWORD)
-    
-    
-    BASE_DIR = os.getenv('BASE_DIR')
-    LOG_DIR = os.getenv(BASE_DIR, "logs")
-    current_date = datetime.now().strftime('%Y-%m-%d')
-    DATA_DIR = os.path.join(BASE_DIR, f"collected_data_{current_date}")
-    
-    # Central record files (located in the BASE_DIR, not date-based)
-    SMB_RECORD_FILE = os.path.join(BASE_DIR, "downloaded_smb_files.txt")
-    SFTP_RECORD_FILE = os.path.join(BASE_DIR, "downloaded_sftp_files.txt")
-    
-    # Email configuration
-    GMAIL_SENDER = os.getenv('GOOGLE_EMAIL_SENDER')
-    GMAIL_PASSWORD = os.getenv('APP_PASSWORD_GOOGLE_PASSWORD')
-    GMAIL_RECIPIENT = os.getenv('GOOGLE_EMAIL_DESTINATOR')
-    
-    @classmethod
-    def validate(cls):
-        if not all([cls.USERNAME, cls.PASSWORD]):
-            raise ValueError("Missing DATA_USERNAME or DATA_PASSWORD in .env file")
-        if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
-            raise ValueError("Missing email configuration in .env file")
-        os.makedirs(cls.LOG_DIR, exist_ok=True)
-        os.makedirs(cls.DATA_DIR, exist_ok=True)
+# Remove any existing handlers so that the logger can be reconfigured
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
 
 def setup_logging():
     # The log file will use the name of the data folder inside the LOG_DIR.
@@ -197,57 +145,14 @@ def download_sftp_files(sftp):
     save_downloaded_files(Config.SFTP_RECORD_FILE, downloaded_files)
     return new_downloaded_count
 
-def send_error_email(subject, error_message, traceback_info=None):
-    """
-    Send an error notification email using Gmail SMTP.
-    
-    Args:
-        subject: Email subject
-        error_message: Main error message
-        traceback_info: Optional traceback information
-    """
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = Config.GMAIL_SENDER
-        msg['To'] = Config.GMAIL_RECIPIENT
-        msg['Subject'] = f"Data Collection Error: {subject}"
-        
-        body = f"""
-        <html>
-          <body>
-            <h2>Data Collection Error Report</h2>
-            <p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p><strong>Error Message:</strong> {error_message}</p>
-            <p><strong>Data Collection Directory:</strong> {Config.DATA_DIR}</p>
-        """
-        
-        if traceback_info:
-            body += f"""
-            <h3>Error Details:</h3>
-            <pre>{traceback_info}</pre>
-            """
-            
-        body += """
-          </body>
-        </html>
-        """
-        
-        msg.attach(MIMEText(body, 'html'))
-        
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(Config.GMAIL_SENDER, Config.GMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
-        logging.info("Error notification email sent successfully")
-    except Exception as e:
-        logging.error(f"Failed to send error email: {e}")
-
 def main():
     try:
+        # First validate configuration 
         Config.validate()
+        
+        # Configure logging after validation to ensure directories exist
         setup_logging()
+        
         logging.info(f"Starting data collection for {Config.current_date}")
         logging.info(f"Data will be saved in: {Config.DATA_DIR}")
 
@@ -269,8 +174,9 @@ def main():
         logging.error(error_msg)
         logging.debug(error_traceback)
         
-        # Send email notification about the error
-        send_error_email(
+        # Send email notification about the error using the Config class method
+        Config.send_error_email(
+            module_name="Data Collection",
             subject="Data Collection Failure",
             error_message=str(e),
             traceback_info=error_traceback

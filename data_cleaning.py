@@ -1,63 +1,30 @@
 import os
 import logging
 import pandas as pd
-from datetime import datetime
 import chardet
 import csv
 from functools import lru_cache
 from pathlib import Path
 import concurrent.futures
+from datetime import datetime
+import traceback
+
+# Import from config file
+from config import ensure_installed, Config
 from dotenv import load_dotenv
+
+# Ensure required packages are installed
+ensure_installed('pandas')
+ensure_installed('chardet')
+ensure_installed('python-dotenv')
 
 # Load environment variables from .env file
 load_dotenv()
 
 
-class Config:
-    """
-    Holds the configuration details for data cleaning,
-    including directories for data storage and logging.
-    """
-    BASE_DIR = os.getenv('BASE_DIR')
-    LOG_DIR = os.path.join(BASE_DIR, "logs")
-    current_date = datetime.now().strftime('%Y-%m-%d')
-    DATA_DIR = os.path.join(BASE_DIR, f"collected_data_{current_date}")
-    CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}")
-    
-    # Dictionary of subfolders and prefixes for custom cleaning
-    SUBFOLDERS = {
-        "Solarlogs": ["PV", "min"],
-        "BellevueConso": ["Consumption", "Temperature", "Humidity"],
-        "BellevueBooking": ["RoomAllocations"],
-        "Meteo": ["Pred"]
-    }
-    
-    # Define a constant for the Solarlogs min prefix
-    MIN_PREFIX_SOLARLOGS = "min"
-    
-    @classmethod
-    def validate(cls):
-        if not cls.BASE_DIR:
-            raise ValueError("Missing BASE_DIR in .env file")
-        if not os.path.exists(cls.DATA_DIR):
-            raise ValueError(f"Data directory {cls.DATA_DIR} does not exist.")
-        os.makedirs(cls.LOG_DIR, exist_ok=True)
-        os.makedirs(cls.CLEAN_DATA_DIR, exist_ok=True)
-
-
 def setup_logging():
-    # The log file will use the name of the data folder inside the LOG_DIR.
-    log_filename = f"cleaning_{os.path.basename(Config.DATA_DIR)}.log"
-    log_file = os.path.join(Config.LOG_DIR, log_filename)
-    # Reconfigure the logger:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, mode='a'),
-            logging.StreamHandler()
-        ]
-    )
+    # Use Config's setup_logging method instead
+    Config.setup_logging('data_cleaning')
 
 
 @lru_cache(maxsize=100)
@@ -363,9 +330,18 @@ def main():
         logging.info("Data cleaning completed.")
         
     except Exception as e:
-        logging.error(f"Fatal error: {e}")
-        import traceback
-        logging.debug(traceback.format_exc())
+        error_msg = f"Fatal error in data cleaning: {e}"
+        error_traceback = traceback.format_exc()
+        logging.error(error_msg)
+        logging.debug(error_traceback)
+        
+        # Send email notification about the error using the Config class method
+        Config.send_error_email(
+            module_name="Data Cleaning",
+            subject="Data Cleaning Failure",
+            error_message=str(e),
+            traceback_info=error_traceback
+        )
         raise
 
 
