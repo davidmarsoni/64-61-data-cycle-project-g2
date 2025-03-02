@@ -26,17 +26,13 @@ def ensure_installed(package_name):
         try:
             logging.info(f"Installing missing package: {package_name}")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-            logging.info(f"Successfully installed {package_name}")
+            logging.info(f"Package {package_name} installed successfully")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to install {package_name}: {e}")
             sys.exit(1)
-    else:
-        logging.debug(f"Package {package_name} is already installed")
 
 # Ensure dotenv is installed before we try to import it
 ensure_installed('python-dotenv')
-
-# Now we can safely import from dotenv
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -44,8 +40,7 @@ load_dotenv()
 
 class Config:
     """
-    Holds the configuration details for data processing,
-    including directories for data storage and logging.
+    Holds the configuration details or environment variables for the application.
     """
     BASE_DIR = os.getenv('BASE_DIR')
     LOG_DIR = os.path.join(BASE_DIR, "logs") if BASE_DIR else None
@@ -69,7 +64,17 @@ class Config:
     GMAIL_PASSWORD = os.getenv('APP_PASSWORD_GOOGLE_PASSWORD')
     GMAIL_RECIPIENT = os.getenv('GOOGLE_EMAIL_DESTINATOR')
     
-    # Dictionary of subfolders and prefixes for custom cleaning
+    # Dictionary of shares and all the subfolders
+    SHARES_SMB = {
+        "Solarlogs": ["PV", "min"],
+        "BellevueConso": ["Consumption", "Temperature", "Humidity"],
+        "BellevueBooking": ["RoomAllocations"]
+    }
+    
+    SHARES_SFTP = {
+        "Meteo": ["Pred"]
+    }
+    
     SUBFOLDERS = {
         "Solarlogs": ["PV", "min"],
         "BellevueConso": ["Consumption", "Temperature", "Humidity"],
@@ -81,30 +86,14 @@ class Config:
     MIN_PREFIX_SOLARLOGS = "min"
     
     @classmethod
-    def validate(cls):
+    def setup(cls,file_type):
         """
-        Validate configuration and create necessary directories
+        Setup the configuration by validating and creating necessary directories
         """
-        if not cls.BASE_DIR:
-            raise ValueError("Missing BASE_DIR in .env file")
+        cls.validate_env_config()
+        cls.setup_logging(file_type)
+        cls.create_directories(file_type)
         
-        if not all([cls.USERNAME, cls.PASSWORD]):
-            raise ValueError("Missing DATA_USERNAME or DATA_PASSWORD in .env file")
-        
-        # Create directories
-        if cls.LOG_DIR:
-            os.makedirs(cls.LOG_DIR, exist_ok=True)
-        
-        if cls.DATA_DIR:
-            os.makedirs(cls.DATA_DIR, exist_ok=True)
-        
-        if cls.CLEAN_DATA_DIR:
-            os.makedirs(cls.CLEAN_DATA_DIR, exist_ok=True)
-        
-        # Validate email configuration
-        if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
-            logging.warning("Missing email configuration in .env file. Email notifications will be disabled.")
-    
     @classmethod
     def setup_logging(cls, module_name):
         """
@@ -132,6 +121,51 @@ class Config:
                 logging.StreamHandler()
             ]
         )
+    @classmethod
+    def validate_env_config(cls):
+        """
+        Validate configuration for the data collector
+        """
+        
+        if not cls.BASE_DIR:
+            raise ValueError("Missing BASE_DIR in .env file")
+        
+        if not cls.SMB_HOST:
+            raise ValueError("Missing SMB_HOST in .env file")
+        
+        if not cls.SFTP_HOST or not cls.SFTP_PORT:
+            raise ValueError("Missing SFTP_HOST or SFTP_PORT in .env file")
+        
+        if not all([cls.USERNAME, cls.PASSWORD]):
+            raise ValueError("Missing DATA_USERNAME or DATA_PASSWORD in .env file")
+        
+        # email configuration
+        if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
+            logging.warning("Missing email configuration in .env file. Email notifications will be disabled.")
+            
+            raise ValueError("Missing email configuration in .env file")
+        
+    @classmethod
+    def create_directories(cls,file_type):
+        """
+        Create necessary directories for the application
+        
+        Args:
+            file_type: Type of file being processed (collector or cleaner)
+        """
+        # Create directories
+        if cls.LOG_DIR:
+            os.makedirs(cls.LOG_DIR, exist_ok=True)
+            logging.info(f"Log directory created at {cls.LOG_DIR}")
+        
+        if cls.DATA_DIR and file_type == "data_collector":
+            os.makedirs(cls.DATA_DIR, exist_ok=True)
+            logging.info(f"Data directory created at {cls.DATA_DIR}")
+        
+        if cls.CLEAN_DATA_DIR and file_type == "data_cleaner":
+            os.makedirs(cls.CLEAN_DATA_DIR, exist_ok=True)
+            logging.info(f"Clean data directory created at {cls.CLEAN_DATA_DIR}")
+    
     
     @classmethod
     def send_error_email(cls, module_name, subject, error_message, traceback_info=None):
@@ -139,7 +173,7 @@ class Config:
         Send an error notification email using Gmail SMTP.
         
         Args:
-            module_name: Name of the module reporting the error (collector/cleaning)
+            module_name: Name of the module reporting the error
             subject: Email subject
             error_message: Main error message
             traceback_info: Optional traceback information
@@ -155,23 +189,14 @@ class Config:
             msg['To'] = cls.GMAIL_RECIPIENT
             msg['Subject'] = f"{module_name} Error: {subject}"
             
-            # Common email body header
+            # Simple, focused email body with just the error information
             body = f"""
             <html>
-              <body>
+            <body>
                 <h2>{module_name} Error Report</h2>
                 <p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 <p><strong>Error Message:</strong> {error_message}</p>
             """
-            
-            # Add module-specific directory information
-            if module_name == "Data Collection":
-                body += f"<p><strong>Data Collection Directory:</strong> {cls.DATA_DIR or 'Not configured'}</p>"
-            elif module_name == "Data Cleaning":
-                body += f"""
-                <p><strong>Data Input Directory:</strong> {cls.DATA_DIR or 'Not configured'}</p>
-                <p><strong>Data Output Directory:</strong> {cls.CLEAN_DATA_DIR or 'Not configured'}</p>
-                """
             
             # Add traceback if provided
             if traceback_info:
@@ -181,17 +206,17 @@ class Config:
                 """
                 
             body += """
-              </body>
+            </body>
             </html>
             """
             
             msg.attach(MIMEText(body, 'html'))
             
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(cls.GMAIL_SENDER, cls.GMAIL_PASSWORD)
-            server.send_message(msg)
-            server.quit()
+            # Send the email
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(cls.GMAIL_SENDER, cls.GMAIL_PASSWORD)
+                server.send_message(msg)
             
             logging.info("Error notification email sent successfully")
             

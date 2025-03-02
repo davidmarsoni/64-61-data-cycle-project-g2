@@ -11,16 +11,11 @@ import traceback
 
 # Import from config file
 from config import ensure_installed, Config
-from dotenv import load_dotenv
 
 # Ensure required packages are installed
 ensure_installed('pandas')
 ensure_installed('chardet')
 ensure_installed('python-dotenv')
-
-# Load environment variables from .env file
-load_dotenv()
-
 
 def setup_logging():
     # Use Config's setup_logging method instead
@@ -311,8 +306,7 @@ def process_and_clean_folder(input_folder, output_folder):
 
 def main():
     try:
-        Config.validate()
-        setup_logging()
+        Config.setup('data_cleaner')
         logging.info(f"Starting data cleaning from {Config.DATA_DIR}")
         logging.info(f"Cleaned files will be stored in: {Config.CLEAN_DATA_DIR}")
 
