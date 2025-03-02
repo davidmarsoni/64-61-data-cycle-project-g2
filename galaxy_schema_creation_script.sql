@@ -19,7 +19,6 @@ GO
 
 CREATE TABLE DimDate (
     id_date INT PRIMARY KEY IDENTITY(1,1),
-    date DATE NOT NULL,
     year INT NOT NULL,
     month INT NOT NULL,
     day INT NOT NULL,
@@ -27,7 +26,6 @@ CREATE TABLE DimDate (
 
 CREATE TABLE DimTime (
     id_time INT PRIMARY KEY IDENTITY(1,1),
-    time TIME NOT NULL,
     hour INT NOT NULL,
     minute INT NOT NULL
 );
@@ -124,13 +122,11 @@ CREATE TABLE FactWeather (
     id_measurement INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
-    id_site INT NOT NULL,
     temperature FLOAT NULL,
     humidity FLOAT NULL,
     solar_radiation FLOAT NULL, 
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time),
-    FOREIGN KEY (id_site) REFERENCES DimWeatherSite(id_site)
 );
 
 CREATE TABLE FactSolarProduction (
