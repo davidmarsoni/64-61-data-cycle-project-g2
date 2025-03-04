@@ -1,30 +1,38 @@
+# Required library imports
 import pyodbc
 import os
+import pandas as pd
+import numpy as np
 from dotenv import load_dotenv
 from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Global configuration
+BASE_DIR = os.getenv('BASE_DIR')
+current_date = datetime.now().strftime('%Y-%m-%d')
+CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}") if BASE_DIR else None
+
+SUBFOLDERS = {
+    "BellevueConso": ["Consumption", "Temperature", "Humidity"]
+}
+
 def create_connection():
-    # Connection parameters
-    server = 'ZEPHYRUS-ANDREI'  # e.g., 'localhost' or 'DESKTOP-ABC\SQLEXPRESS'
+    """Create database connection using Windows Authentication"""
+    server = '.' #I used this so that it selects the local server automatically  
     database = 'data_cycle_db'
-   
-    
     try:
-        # For Windows Authentication, use this instead:
         conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;'
-        
         conn = pyodbc.connect(conn_str)
         print("Connection successful!")
         return conn
-    
     except Exception as e:
         print(f"Error connecting to database: {str(e)}")
         return None
 
 def execute_query(connection, query):
+    """Execute a SQL query and return results"""
     try:
         cursor = connection.cursor()
         cursor.execute(query)
@@ -34,161 +42,231 @@ def execute_query(connection, query):
         print(f"Error executing query: {str(e)}")
         return None
 
-# Example usage
-if __name__ == "__main__":
-    connection = create_connection()
-    if connection:
-        # Your database operations here
-        connection.close()
-        
-# Load the file
-BASE_DIR = os.getenv('BASE_DIR')
-current_date = datetime.now().strftime('%Y-%m-%d')
-CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}") if BASE_DIR else None
-
-SUBFOLDERS = {
-    "BellevueConso": ["Consumption", "Temperature", "Humidity"]
-}
-
-print(CLEAN_DATA_DIR)
-print(SUBFOLDERS)
-
-# Get all the files from the folder BellevueConso and get only the file with the above subfolders
 def get_files_by_category():
+    """Get all CSV files organized by category"""
     files_by_category = {}
     
-    if not CLEAN_DATA_DIR:
-        print("BASE_DIR environment variable not set or CLEAN_DATA_DIR could not be created")
+    if not CLEAN_DATA_DIR or not os.path.exists(CLEAN_DATA_DIR):
+        print(f"Directory does not exist: {CLEAN_DATA_DIR}")
         return files_by_category
+        
+    # List all folders in the cleaned_data directory to find the most recent one
+    data_folders = [f for f in os.listdir(BASE_DIR) if f.startswith('cleaned_data_')]
+    if not data_folders:
+        print("No cleaned_data folders found")
+        return files_by_category
+        
+    # Get the most recent data folder
+    latest_data_folder = sorted(data_folders)[-1]
+    actual_data_dir = os.path.join(BASE_DIR, latest_data_folder)
     
-    for main_folder, categories in SUBFOLDERS.items():
-        main_folder_path = os.path.join(CLEAN_DATA_DIR, main_folder)
-        if not os.path.exists(main_folder_path):
-            print(f"Main folder path does not exist: {main_folder_path}")
-            continue
-            
-        files_by_category[main_folder] = {}
+    print(f"Using data folder: {actual_data_dir}")
+    
+    # Process BellevueConso folder
+    main_folder_path = os.path.join(actual_data_dir, "BellevueConso")
+    if not os.path.exists(main_folder_path):
+        print(f"Main folder path does not exist: {main_folder_path}")
+        return files_by_category
         
-        # Get all files in the main folder
-        all_files = [f for f in os.listdir(main_folder_path) if os.path.isfile(os.path.join(main_folder_path, f))]
-        
-        # Organize files by category
-        for category in categories:
-            # Check if file contains the category name (case-insensitive)
-            matching_files = [
-                os.path.join(main_folder_path, filename) 
-                for filename in all_files 
-                if category.lower() in filename.lower()
-            ]
-            
-            # Store the files for this category
-            files_by_category[main_folder][category] = matching_files
-            
+    files_by_category["BellevueConso"] = {}
+    
+    # Get all CSV files and categorize them by type
+    for f in os.listdir(main_folder_path):
+        if f.endswith('.csv'):
+            for category in SUBFOLDERS["BellevueConso"]:
+                if category.lower() in f.lower():
+                    if category not in files_by_category["BellevueConso"]:
+                        files_by_category["BellevueConso"][category] = []
+                    files_by_category["BellevueConso"][category].append(os.path.join(main_folder_path, f))
+                    print(f"Found {category} file: {f}")
+    
     return files_by_category
 
-# Get organized files
-organized_files = get_files_by_category()
-print(organized_files)
+def populate_dim_date(connection, date_obj):
+    """Populate DimDate table and prevent duplicates"""
+    cursor = connection.cursor()
+    
+    query = """
+    SELECT id_date FROM DimDate 
+    WHERE [Year] = ? AND [Month] = ? AND [Day] = ?
+    """
+    
+    try:
+        cursor.execute(query, (date_obj.year, date_obj.month, date_obj.day))
+        result = cursor.fetchone()
+        
+        if result:
+            return result[0]
+        
+        insert_query = """
+        INSERT INTO DimDate ([Year], [Month], [Day])
+        VALUES (?, ?, ?)
+        """
+        cursor.execute(insert_query, (date_obj.year, date_obj.month, date_obj.day))
+        connection.commit()
+        
+        cursor.execute("SELECT @@IDENTITY")
+        return cursor.fetchone()[0]
+        
+    except Exception as e:
+        print(f"Error in populate_dim_date: {str(e)}")
+        connection.rollback()
+        raise
 
-import pandas as pd
-import os
-from datetime import datetime
-import pyodbc
-import numpy as np
+def populate_dim_time(connection, time_obj):
+    """Populate DimTime table and prevent duplicates"""
+    cursor = connection.cursor()
+    
+    query = """
+    SELECT id_time FROM DimTime 
+    WHERE [Hour] = ? AND [Minute] = ?
+    """
+    
+    try:
+        cursor.execute(query, (time_obj.hour, time_obj.minute))
+        result = cursor.fetchone()
+        
+        if result:
+            return result[0]
+        
+        insert_query = """
+        INSERT INTO DimTime ([Hour], [Minute])
+        VALUES (?, ?)
+        """
+        cursor.execute(insert_query, (time_obj.hour, time_obj.minute))
+        connection.commit()
+        
+        cursor.execute("SELECT @@IDENTITY")
+        return cursor.fetchone()[0]
+        
+    except Exception as e:
+        print(f"Error in populate_dim_time: {str(e)}")
+        connection.rollback()
+        raise
 
+def get_value_for_date_time(df, date_str, time_str, column_name):
+    """Get value from dataframe for specific date and time"""
+    if df is None:
+        return None
+    
+    matches = df[(df['Date'] == date_str) & (df['Time'] == time_str)]
+    if not matches.empty and column_name in matches.columns:
+        value = matches[column_name].iloc[0]
+        return None if pd.isna(value) else value
+    
+    return None
+
+def populate_fact_weather(connection, temp_df, humidity_df, consumption_df, date_id_map, time_id_map):
+    """Populate FactWeather table with checks for existing records"""
+    cursor = connection.cursor()
+    
+    try:
+        # Process temperature data with corresponding humidity
+        if temp_df is not None:
+            for _, row in temp_df.iterrows():
+                date_str = row['Date']
+                time_str = row['Time']
+                
+                # Get IDs from dimension tables
+                date_id = date_id_map.get(date_str)
+                time_id = time_id_map.get(time_str)
+                
+                if date_id and time_id:
+                    # Check if record already exists
+                    check_query = """
+                    SELECT 1 FROM FactWeather 
+                    WHERE id_date = ? AND id_time = ?
+                    """
+                    cursor.execute(check_query, (date_id, time_id))
+                    if cursor.fetchone():
+                        continue
+                    
+                    # Get humidity value for same date/time
+                    humidity_value = get_value_for_date_time(humidity_df, date_str, time_str, 'Variation')
+                    
+                    # Insert new record
+                    insert_query = """
+                    INSERT INTO FactWeather (id_date, id_time, temperature, humidity)
+                    VALUES (?, ?, ?, ?)
+                    """
+                    cursor.execute(insert_query, (
+                        date_id,
+                        time_id,
+                        row['Variation'],  # Temperature value
+                        humidity_value
+                    ))
+            
+            connection.commit()
+            
+    except Exception as e:
+        print(f"Error in populate_fact_weather: {str(e)}")
+        connection.rollback()
+        raise
 
 def populate_dim_tables_and_facts():
+    """Main ETL process to populate all tables"""
     connection = create_connection()
     if not connection:
         print("Failed to connect to database")
         return
     
     try:
-        # Get organized files
         organized_files = get_files_by_category()
+        all_dates = set()
+        all_times = set()
         
-        # Dictionary to hold dataframes for each category
-        dataframes = {}
-        all_timestamps = set()
-        
-        # Read files into dataframes and collect all unique timestamps
         for main_folder, categories in organized_files.items():
-            dataframes[main_folder] = {}
-            
             for category, file_paths in categories.items():
                 if not file_paths:
                     print(f"No {category} files found")
                     continue
                 
-                # Read the first file for each category (assumes similar structure)
-                file_path = file_paths[0]
-                print(f"Reading {category} data from {file_path}")
-                
-                try:
-                    # Read CSV file
-                    df = pd.read_csv(file_path)
-                    print(df.head())
+                for file_path in file_paths:
+                    print(f"Reading {category} data from {file_path}")
                     
-                    # Check if we have separate Date and Time columns or a single Date column
-                    if 'Date' in df.columns and 'Time' in df.columns:
-                        # If we have separate columns, parse them accordingly
-                        # Don't parse_dates yet since we're handling date and time separately
-                        print("Found separate Date and Time columns")
-                        dataframes[main_folder][category] = df
+                    try:
+                        df = pd.read_csv(file_path)
+                        file_date = os.path.basename(file_path).split('-')[0]
                         
-                        # Collect all unique dates and times
-                        all_dates = set(df['Date']) if 'all_dates' in locals() else set()
-                        all_times = set(df['Time']) if 'all_times' in locals() else set()
+                        df['Date'] = pd.to_datetime(df['Date'], format='%d.%m.%Y').dt.strftime('%Y-%m-%d')
+                        df['Time'] = pd.to_datetime(df['Heure'], format='%H:%M:%S').dt.strftime('%H:%M:%S')
                         
-                    elif 'Date' in df.columns:
-                        # If we have a single Date column that contains both date and time
-                        df['Date'] = pd.to_datetime(df['Date'])
-                        dataframes[main_folder][category] = df
-                        
-                        # Extract date and time parts separately
-                        if 'all_dates' not in locals():
-                            all_dates = set()
-                            all_times = set()
-                        
-                        # Add to our sets of unique dates and times
-                        all_dates.update(df['Date'].dt.strftime('%Y-%m-%d'))
-                        all_times.update(df['Date'].dt.strftime('%H:%M:%S'))
-                    
-                except Exception as e:
-                    print(f"Error reading {category} file: {str(e)}")
-        
-         # Convert dates and times to proper datetime objects for database insertion
-        date_objects = {datetime.strptime(date_str, '%Y-%m-%d') for date_str in all_dates}
-        time_objects = {datetime.strptime(time_str, '%H:%M:%S') for time_str in all_times}
-        
-        print("All unique dates:", all_dates)
-        print("All unique times:", all_times)
-        
-        # Populate DimDate table
-        date_id_map = {}
-        for date_obj in date_objects:
-            date_id = populate_dim_date(connection, date_obj)
-            date_str = date_obj.strftime('%Y-%m-%d')
-            date_id_map[date_str] = date_id
-        
-        # Populate DimTime table
-        time_id_map = {}
-        for time_obj in time_objects:
-            time_id = populate_dim_time(connection, time_obj)
-            time_str = time_obj.strftime('%H:%M:%S')
-            time_id_map[time_str] = time_id
-    
-        
-        # Populate FactWeather table
-        if 'BellevueConso' in dataframes:
-            populate_fact_weather(
-                connection, 
-                dataframes['BellevueConso'].get('Temperature'), 
-                dataframes['BellevueConso'].get('Humidity'),
-                dataframes['BellevueConso'].get('Consumption'),
-                date_id_map,
-                time_id_map
-            )
+                        if category == 'Temperature':
+                            humidity_path = next((f for f in organized_files[main_folder]['Humidity'] 
+                                               if file_date in f), None)
+                            
+                            if humidity_path:
+                                humidity_df = pd.read_csv(humidity_path)
+                                humidity_df['Date'] = pd.to_datetime(humidity_df['Date'], 
+                                                                   format='%d.%m.%Y').dt.strftime('%Y-%m-%d')
+                                humidity_df['Time'] = pd.to_datetime(humidity_df['Heure'], 
+                                                                   format='%H:%M:%S').dt.strftime('%H:%M:%S')
+                                
+                                all_dates.update(df['Date'])
+                                all_times.update(df['Time'])
+                                
+                                date_id_map = {
+                                    date_str: populate_dim_date(connection, datetime.strptime(date_str, '%Y-%m-%d'))
+                                    for date_str in all_dates
+                                }
+                                
+                                time_id_map = {
+                                    time_str: populate_dim_time(connection, datetime.strptime(time_str, '%H:%M:%S'))
+                                    for time_str in all_times
+                                }
+                                
+                                populate_fact_weather(
+                                    connection,
+                                    df,
+                                    humidity_df,
+                                    None,
+                                    date_id_map,
+                                    time_id_map
+                                )
+                                
+                    except Exception as e:
+                        print(f"Error processing file {file_path}: {str(e)}")
+                        continue
         
         connection.commit()
         print("ETL process completed successfully")
@@ -196,158 +274,8 @@ def populate_dim_tables_and_facts():
     except Exception as e:
         print(f"Error in ETL process: {str(e)}")
         connection.rollback()
-    
     finally:
         connection.close()
 
-def populate_dim_date(connection, date_obj):
-    """Populate DimDate table and return the date_id"""
-    cursor = connection.cursor()
-    
-    # Check if date already exists
-    query = """
-    SELECT id_date FROM DimDate 
-    WHERE [Year] = ? AND [Month] = ? AND [Day] = ?
-    """
-    
-    print("191 ",date_obj.year, date_obj.month, date_obj.day)
-    cursor.execute(query, (date_obj.year, date_obj.month, date_obj.day))
-    result = cursor.fetchone()
-    
-    if result:
-        return result[0]
-    
-    # Insert new date
-    query = """
-    INSERT INTO DimDate ([Year], [Month], [Day])
-    VALUES (?, ?, ?)
-    """
-    cursor.execute(query, (date_obj.year, date_obj.month, date_obj.day))
-    
-    # Get the new date_id
-    cursor.execute("SELECT @@IDENTITY")
-    date_id = cursor.fetchone()[0]
-    
-    return date_id
-
-def populate_dim_time(connection, time_obj):
-    """Populate DimTime table and return the time_id"""
-    cursor = connection.cursor()
-    
-    # Check if time already exists
-    query = """
-    SELECT id_time FROM DimTime 
-    WHERE [Hour] = ? AND [Minute] = ?
-    """
-    cursor.execute(query, (time_obj.hour, time_obj.minute))
-    result = cursor.fetchone()
-    
-    if result:
-        return result[0]
-    
-    # Insert new time
-    query = """
-    INSERT INTO DimTime ([Hour], [Minute])
-    VALUES (?, ?)
-    """
-    cursor.execute(query, (time_obj.hour, time_obj.minute))
-    
-    # Get the new time_id
-    cursor.execute("SELECT @@IDENTITY")
-    time_id = cursor.fetchone()[0]
-    
-    return time_id
-
-def populate_fact_weather(connection, temp_df, humidity_df, consumption_df, date_id_map, time_id_map):
-    """Populate FactWeather table with combined data"""
-    cursor = connection.cursor()
-    
-    # Prepare full dataset from all sources
-    all_data = []
-    
-    # Process all rows in temperature data
-    if temp_df is not None:
-        for _, row in temp_df.iterrows():
-            # Handle either separate Date/Time columns or combined Date column
-            if 'Date' in temp_df.columns and 'Time' in temp_df.columns:
-                date_str = row['Date']
-                time_str = row['Time']
-            else:
-                # Assuming Date column is already parsed as datetime
-                timestamp = row['Date']
-                date_str = timestamp.strftime('%Y-%m-%d')
-                time_str = timestamp.strftime('%H:%M:%S')
-            
-            # Skip if we don't have the date or time in our maps
-            if date_str not in date_id_map or time_str not in time_id_map:
-                continue
-            
-            # Get the corresponding values from other dataframes
-            humidity_value = get_value_for_date_time(humidity_df, date_str, time_str, 'Humidity') if humidity_df is not None else None
-            solar_radiation = get_value_for_date_time(consumption_df, date_str, time_str, 'SolarRadiation') if consumption_df is not None else None
-            
-            # Add data point
-            all_data.append({
-                'date_id': date_id_map[date_str],
-                'time_id': time_id_map[time_str],
-                'temperature': row.get('Temperature', None),
-                'humidity': humidity_value,
-                'solar_radiation': solar_radiation
-            })
-    
-    # Insert data into FactWeather
-    for data_point in all_data:
-        query = """
-        INSERT INTO FactWeather (id_date, id_time, temperature, humidity, solar_radiation)
-        VALUES (?, ?, ?, ?, ?)
-        """
-        cursor.execute(query, (
-            data_point['date_id'],
-            data_point['time_id'],
-            data_point['temperature'],
-            data_point['humidity'],
-            data_point['solar_radiation']
-        ))
-
-def get_value_for_date_time(df, date_str, time_str, column_name):
-    """Get value from dataframe for specific date and time and column"""
-    if df is None:
-        return None
-    
-    # Handle either separate Date/Time columns or combined Date column
-    if 'Date' in df.columns and 'Time' in df.columns:
-        # Find matching date and time in dataframe
-        matches = df[(df['Date'] == date_str) & (df['Time'] == time_str)]
-    else:
-        # Find matching timestamp in dataframe with datetime column
-        # Convert timestamp strings back to datetime for comparison
-        timestamp_str = f"{date_str} {time_str}"
-        matches = df[df['Date'] == pd.to_datetime(timestamp_str)]
-    
-    if not matches.empty and column_name in matches.columns:
-        value = matches[column_name].iloc[0]
-        return None if pd.isna(value) else value
-    
-    return None
-
-def get_value_for_timestamp(df, timestamp, column_name):
-    """Get value from dataframe for specific timestamp and column"""
-    if df is None:
-        return None
-    
-    # Find matching timestamp in dataframe
-    matches = df[df['Date'] == timestamp]
-    if not matches.empty and column_name in matches.columns:
-        value = matches[column_name].iloc[0]
-        return None if pd.isna(value) else value
-    
-    return None
-
-# Add this call at the end of your script
 if __name__ == "__main__":
-    connection = create_connection()
-    if connection:
-        # Run ETL process
-        populate_dim_tables_and_facts()
-        connection.close()
-
+    populate_dim_tables_and_facts()
