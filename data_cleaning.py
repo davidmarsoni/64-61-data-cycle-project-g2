@@ -8,6 +8,7 @@ from pathlib import Path
 import concurrent.futures
 from datetime import datetime
 import traceback
+import sys
 
 # Import from config file
 from config import ensure_installed, Config
@@ -17,9 +18,92 @@ ensure_installed('pandas')
 ensure_installed('chardet')
 ensure_installed('python-dotenv')
 
+# Track errors throughout the execution
+error_log = []
+
+def log_error(phase, error_msg, trace=None):
+    """Log an error message with optional traceback.
+
+    Args:
+        phase (_type_): The phase of execution where the error occurred
+        error_msg (_type_): The error message
+        trace (_type_, optional): Traceback information. Defaults to None.
+    """
+    error_entry = {
+        'phase': phase,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'message': str(error_msg),
+        'traceback': trace
+    }
+    error_log.append(error_entry)
+    if trace:
+        logging.error(f"{phase}: {error_msg}")
+        logging.debug(trace)
+    else:
+        logging.error(f"{phase}: {error_msg}")
+
 def setup_logging():
     # Use Config's setup_logging method instead
     Config.setup_logging('data_cleaning')
+
+def send_error_summary():
+    """Send an email summarizing all errors encountered during execution
+    """
+    if not error_log:
+        return
+    
+    # Prepare error message for email
+    summary_msg = "The following errors occurred during data cleaning:\n\n"
+    for error in error_log:
+        summary_msg += f"- Phase: {error['phase']}\n"
+        summary_msg += f"  Time: {error['time']}\n"
+        summary_msg += f"  Message: {error['message']}\n\n"
+    
+    # Get the first error's traceback for detailed information
+    first_traceback = error_log[0].get('traceback', None) if error_log else None
+    
+    try:
+        Config.send_error_email(
+            module_name="Data Cleaner",
+            subject=f"Data Cleaning Errors ({len(error_log)} issues)",
+            error_message=summary_msg,
+            traceback_info=first_traceback
+        )
+        logging.info("Error summary email sent successfully.")
+    except Exception as email_error:
+        logging.error(f"Failed to send error summary email: {email_error}")
+
+def load_processed_files(record_file):
+    """Load previously processed files from a record file.
+
+    Args:
+        record_file (_type_): path to the record file
+
+    Returns:
+        _type_: set of processed files
+    """
+    try:
+        if os.path.exists(record_file):
+            with open(record_file, "r") as f:
+                return set(line.strip() for line in f)
+        return set()
+    except Exception as e:
+        log_error("Load Processed Files", f"Error loading records from {record_file}: {e}", traceback.format_exc())
+        return set()  # Return empty set to continue operation
+
+def save_processed_files(record_file, processed):
+    """Save the list of processed files to a record file.
+
+    Args:
+        record_file (_type_): path to the record file
+        processed (_type_): set of processed files
+    """
+    try:
+        with open(record_file, "w") as f:
+            for item in processed:
+                f.write(f"{item}\n")
+    except Exception as e:
+        log_error("Save Processed Files", f"Error saving records to {record_file}: {e}", traceback.format_exc())
 
 
 @lru_cache(maxsize=100)
@@ -43,14 +127,14 @@ def process_solarlogs(file_path, output_path, encoding, filename):
         )
         
         # Drop unwanted columns (if present)
-        data = data.drop(columns=['Unité affichage', 'Valeur Acquisition'], errors="ignore")
+        data = data.drop(columns=['Unit� affichage', 'Valeur Acquisition'], errors="ignore")
         data.to_csv(output_path, index=False)
         logging.info(f"Successfully processed Solarlogs data: {os.path.basename(file_path)}")
         
         return True
     except Exception as e:
-        logging.error(f"Error processing Solarlogs file {filename}: {str(e)}")
-        logging.error(f"Skipping file {filename}...")
+        error_trace = traceback.format_exc()
+        log_error(f"Process Solarlogs", f"Error processing {filename}: {str(e)}", error_trace)
         return False
 
 
@@ -127,8 +211,8 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         
         return True
     except Exception as e:
-        logging.error(f"Error processing BellevueBooking file {filename}: {str(e)}")
-        logging.error(f"Skipping file {filename}...")
+        error_trace = traceback.format_exc()
+        log_error(f"Process BellevueBooking", f"Error processing {filename}: {str(e)}", error_trace)
         return False
 
 
@@ -147,9 +231,25 @@ def process_meteo(file_path, output_path, encoding, filename):
         # Replace -99999.0 with 0
         data.replace(-99999.0, 0, inplace=True)
         
+        # Check if Site column exists and filter for only Sion and Visp
+        has_site_column = 'Site' in data.columns
+        if has_site_column:
+            # Filter for only Sion and Visp sites
+            data = data[data['Site'].isin(['Sion', 'Visp'])]
+            
+            # Check if we have data left after filtering
+            if data.empty:
+                logging.warning(f"No data for Sion or Visp in file {filename}, skipping")
+                return False
+        
         # Use pivot_table to efficiently reshape the data
+        # Include Site in index if it exists
+        index_cols = ['Prediction', 'Time']
+        if has_site_column:
+            index_cols.insert(0, 'Site')
+            
         df_result = data.pivot_table(
-            index=['Prediction', 'Time'],
+            index=index_cols,
             columns='Measurement',
             values='Value',
             aggfunc='first'
@@ -159,22 +259,32 @@ def process_meteo(file_path, output_path, encoding, filename):
         df_result['Date'] = pd.to_datetime(df_result['Time']).dt.date
         df_result['Time'] = pd.to_datetime(df_result['Time']).dt.time
         
-        # Rearrange columns 
-        measurement_cols = [col for col in df_result.columns if col not in ['Prediction', 'Time', 'Date']]
-        df_result = df_result[['Date', 'Time', 'Prediction'] + measurement_cols]
+        # Rearrange columns in the requested order: Date, Time, Site, Prediction, then measurement columns
+        first_cols = ['Date', 'Time']
+        if has_site_column:
+            first_cols.append('Site')
+        first_cols.append('Prediction')
+            
+        measurement_cols = [col for col in df_result.columns 
+                          if col not in first_cols + ['Date', 'Time']]
+        df_result = df_result[first_cols + measurement_cols]
         
-        # Sort and save
-        df_result.sort_values(by=['Prediction', 'Time'], inplace=True)
+        # Sort using the requested order as well
+        sort_cols = ['Date', 'Time']
+        if has_site_column:
+            sort_cols.append('Site')
+        sort_cols.append('Prediction')
+            
+        df_result.sort_values(by=sort_cols, inplace=True)
         df_result.to_csv(output_path, index=False)
         
         logging.info(f"Successfully processed Meteo data: {os.path.basename(file_path)}")
         return True
         
     except Exception as e:
-        logging.error(f"Error processing Meteo file {filename}: {str(e)}")
-        logging.error(f"Skipping file {filename}...")
+        error_trace = traceback.format_exc()
+        log_error(f"Process Meteo", f"Error processing {filename}: {str(e)}", error_trace)
         return False
-        
 
 def is_file_for_category(filename, category):
     """Check if a file belongs to a specific category based on its prefixes"""
@@ -231,7 +341,8 @@ def process_min_solarlogs(file_path, output_path):
         return True
         
     except Exception as e:
-        logging.error(f"Error processing min Solarlogs file: {str(e)}")
+        error_trace = traceback.format_exc()
+        log_error(f"Process Min Solarlogs", f"Error processing {os.path.basename(file_path)}: {str(e)}", error_trace)
         return False
 
 
@@ -264,17 +375,29 @@ def custom_clean_csv(file_path, output_path):
             return True
     
     except Exception as e:
-        logging.error(f"Error processing {filename}: {str(e)}")
+        error_trace = traceback.format_exc()
+        log_error(f"Custom Clean CSV", f"Error processing {filename}: {str(e)}", error_trace)
         return False
 
 
 def process_file(args):
     """Process a single file (for parallel execution)"""
-    in_file, out_file = args
-    return custom_clean_csv(in_file, out_file)
+    in_file, out_file, processed_files = args
+    filename = os.path.basename(in_file)
+    
+    # Skip if already processed
+    if filename in processed_files:
+        logging.info(f"File already processed, skipping: {filename}")
+        return True
+    
+    result = custom_clean_csv(in_file, out_file)
+    if result:
+        # Add to processed files only if successful
+        processed_files.add(filename)
+    return result
 
 
-def process_and_clean_folder(input_folder, output_folder):
+def process_and_clean_folder(input_folder, output_folder, processed_files, record_file):
     """Process all CSV files in a folder and its subfolders"""
     file_pairs = []
     
@@ -291,7 +414,7 @@ def process_and_clean_folder(input_folder, output_folder):
         for file in csv_files:
             in_file = Path(root) / file
             out_file = target_folder / file
-            file_pairs.append((str(in_file), str(out_file)))
+            file_pairs.append((str(in_file), str(out_file), processed_files))
     
     # Optimize max_workers based on system and workload
     max_workers = min(32, os.cpu_count() + 4) if os.cpu_count() else 4
@@ -300,15 +423,27 @@ def process_and_clean_folder(input_folder, output_folder):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         results = list(executor.map(process_file, file_pairs))
     
+    # Save processed files record
+    save_processed_files(record_file, processed_files)
+    
     processed = sum(1 for r in results if r)
     logging.info(f"Processed {processed}/{len(file_pairs)} files in {input_folder}")
 
 
 def main():
+    critical_error = False
     try:
         Config.setup('data_cleaner')
         logging.info(f"Starting data cleaning from {Config.DATA_DIR}")
         logging.info(f"Cleaned files will be stored in: {Config.CLEAN_DATA_DIR}")
+
+        # Ensure the record file directory exists
+        record_file = os.path.join(Config.BASE_DIR, 'cleaned_files.txt')
+        os.makedirs(os.path.dirname(record_file), exist_ok=True)
+        
+        # Load the set of already processed files
+        processed_files = load_processed_files(record_file)
+        logging.info(f"Loaded {len(processed_files)} previously processed files")
 
         # Process each subfolder individually
         for subfolder in Config.SUBFOLDERS:
@@ -317,26 +452,24 @@ def main():
             
             if input_folder.exists():
                 logging.info(f"Processing subfolder: {subfolder}")
-                process_and_clean_folder(input_folder, output_folder)
+                process_and_clean_folder(input_folder, output_folder, processed_files, record_file)
             else:
                 logging.warning(f"Subfolder {subfolder} does not exist. Skipping.")
 
         logging.info("Data cleaning completed.")
         
     except Exception as e:
+        critical_error = True
         error_msg = f"Fatal error in data cleaning: {e}"
         error_traceback = traceback.format_exc()
-        logging.error(error_msg)
-        logging.debug(error_traceback)
+        log_error("Main Execution", error_msg, error_traceback)
+    finally:
+        # Send error summary email if there were any errors
+        if error_log:
+            send_error_summary()
         
-        # Send email notification about the error using the Config class method
-        Config.send_error_email(
-            module_name="Data Cleaning",
-            subject="Data Cleaning Failure",
-            error_message=str(e),
-            traceback_info=error_traceback
-        )
-        raise
+        if critical_error:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

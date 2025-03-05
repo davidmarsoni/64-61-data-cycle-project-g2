@@ -62,13 +62,8 @@ CREATE TABLE DimDivision (
 );
 
 -- ==============================
--- Dimension Tables Specific to FactEnergyMeasurements
+-- Dimension Tables Specific to FactSolarProduction
 -- ==============================
-
-CREATE TABLE DimWeatherSite (
-    id_site INT PRIMARY KEY IDENTITY(1,1),
-    siteName VARCHAR(255) NOT NULL
-);
 
 CREATE TABLE DimInverter (
     id_inverter INT PRIMARY KEY IDENTITY(1,1),
@@ -110,7 +105,7 @@ CREATE TABLE FactBookings (
 );
 
 CREATE TABLE FactEnergyConsumption (
-    id_measurement INT PRIMARY KEY IDENTITY(1,1),
+    id_FactEnergyConsumption INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     energy_consumed FLOAT NOT NULL, 
@@ -118,27 +113,17 @@ CREATE TABLE FactEnergyConsumption (
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
 
-CREATE TABLE FactWeather (
-    id_measurement INT PRIMARY KEY IDENTITY(1,1),
-    id_date INT NOT NULL,
-    id_time INT NOT NULL,
-    temperature FLOAT NULL,
-    humidity FLOAT NULL,
-    solar_radiation FLOAT NULL, 
-    FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
-    FOREIGN KEY (id_time) REFERENCES DimTime(id_time),
-);
-
 CREATE TABLE FactSolarProduction (
-    id_measurement INT PRIMARY KEY IDENTITY(1,1),
+    id_FactSolarProduction INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     id_inverter INT NOT NULL,
-    power_generated FLOAT NOT NULL, 
-    id_status INT NULL,  -- Only for solar panels
-    error_count INT DEFAULT 0,
+    id_status INT NOT NULL,
+    total_energy_produced FLOAT NOT NULL, 
+    energy_produced FLOAT NOT NULL,
+    humidity FLOAT NOT NULL,
+    temperature FLOAT NOT NULL,
+    radation FLOAT NOT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
-    FOREIGN KEY (id_time) REFERENCES DimTime(id_time),
-    FOREIGN KEY (id_inverter) REFERENCES DimInverter(id_inverter),
-    FOREIGN KEY (id_status) REFERENCES DimStatus(id_status),
+    FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
