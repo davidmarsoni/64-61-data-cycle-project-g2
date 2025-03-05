@@ -127,7 +127,9 @@ def process_solarlogs(file_path, output_path, encoding, filename):
         )
         
         # Drop unwanted columns (if present)
-        data = data.drop(columns=['Unit� affichage', 'Valeur Acquisition'], errors="ignore")
+        # handle the drop of the Unit� affichage colum 3 with the id of the column because the name is not always the same
+        data = data.drop(columns=[data.columns[2]], errors="ignore")
+        data = data.drop(columns=['Valeur Acquisition'], errors="ignore")
         data.to_csv(output_path, index=False)
         logging.info(f"Successfully processed Solarlogs data: {os.path.basename(file_path)}")
         
