@@ -151,6 +151,30 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             engine='python'
         )
         
+        # correct the date format from 8 janv. 2023 to 2023-01-08 
+        month_mapping = {
+            'janv.': '01', 'févr.': '02', 'mars': '03', 'avr.': '04',
+            'mai': '05', 'juin': '06', 'juil.': '07', 'août': '08',
+            'sept.': '09', 'oct.': '10', 'nov.': '11', 'déc.': '12'
+        }
+        
+        def custom_parse_date(date_str):
+            if pd.isna(date_str):
+                return None
+            
+            parts = date_str.split()
+            if len(parts) != 3:
+                return None
+                
+            day, month_abbr, year = parts
+            if month_abbr not in month_mapping:
+                return None
+                
+            month = month_mapping[month_abbr]
+            return f"{year}-{month}-{day.zfill(2)}"
+            
+        data['Date'] = data['Date'].apply(custom_parse_date)
+                
         # Check if quotes need to be stripped
         if data.iloc[0, 0].startswith('"') and data.iloc[0, -1].endswith('"'):
             # Fix deprecated applymap by using DataFrame.map with a Series
@@ -165,7 +189,7 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         data = data[data['Nom'].str.startswith('VS-BEL')]
         
         # Drop unwanted columns - modify this based on actual columns
-        columns_to_drop = ['Rés.-no', 'Sigle de la salle remplacée', 'Nom entier de la salle remplacée',
+        columns_to_drop = ['Nom entier','Rés.-no', 'Sigle de la salle remplacée', 'Nom entier de la salle remplacée',
                         'Date de début.1', 'Date de fin.1', 'Périodicité', 'Poste de dépenses',
                         'Remarque', 'Annotation']
         data = data.drop(columns=columns_to_drop, errors="ignore")
@@ -180,14 +204,26 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             return True
         
         # Create a new DataFrame to store expanded rows
-        
         expanded_rows = []
+        
+        # Store the renamed column names
+        class_column_renamed = 'class'
+        professor_column_renamed = 'professor'
+        
+        # Rename Nom,Nom entier,Type de réservation,Codes,Nom de l'utilisateur,Classe,Activité,Professeur,Division
+        data.rename(columns={'Date': 'Date', 'Date de début': 'start_time', 'Date de fin': 'end_time',
+                            'Nom': 'room_name', 'Type de réservation': 'reservation_type',
+                            'Codes': 'codes', 'Nom de l\'utilisateur': 'user_name', 
+                            'Classe': 'class', 'Activité': 'activity', 
+                            'Professeur': 'professor', 'Division': 'division'}, inplace=True)
+        
+        data = data[['Date', 'start_time', 'end_time'] + [col for col in data.columns if col not in ['Date', 'start_time', 'end_time']]]
         
         # Process each row more efficiently
         for _, row in data.iterrows():
             # Split both class and professor fields using vectorized operations
-            classes = [cls.strip() for cls in str(row[class_column]).split(',') if cls.strip()]
-            professors = [prof.strip() for prof in str(row[professor_column]).split(',') if prof.strip()]
+            classes = [cls.strip() for cls in str(row[class_column_renamed]).split(',') if cls.strip()]
+            professors = [prof.strip() for prof in str(row[professor_column_renamed]).split(',') if prof.strip()]
             
             # Skip if either list is empty
             if not classes or not professors:
@@ -197,8 +233,8 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             for class_name in classes:
                 for professor in professors:
                     new_row = row.copy()
-                    new_row[class_column] = class_name
-                    new_row[professor_column] = professor
+                    new_row[class_column_renamed] = class_name
+                    new_row[professor_column_renamed] = professor
                     expanded_rows.append(new_row)
         
         # Create new DataFrame with expanded rows if any exist
