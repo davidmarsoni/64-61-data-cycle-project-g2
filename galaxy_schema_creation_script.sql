@@ -76,6 +76,14 @@ CREATE TABLE DimStatus (
 );
 
 -- ==============================
+-- Dimension Tables Specific to FactMeteoSwissData
+-- ==============================
+CREATE TABLE DimSite (
+    id_site INT PRIMARY KEY IDENTITY(1,1),
+    siteName VARCHAR(255) NOT NULL
+);
+
+-- ==============================
 -- Fact Table
 -- ==============================
 
@@ -125,4 +133,30 @@ CREATE TABLE FactSolarProduction (
     energy_produced FLOAT NOT NULL, -- Energy produced by 1 inverter
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
+);
+
+CREATE TABLE FactPrediction (
+    id_FactPredictionWeather INT PRIMARY KEY IDENTITY(1,1),
+    id_date INT NOT NULL,
+    id_time INT NOT NULL,
+
+    predicted_consumption FLOAT NOT NULL,
+    predicted_production FLOAT NOT NULL,
+
+    FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
+    FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
+);
+
+CREATE TABLE FactMeteoSwissData (
+    id_FactMeteoSwissData INT PRIMARY KEY IDENTITY(1,1),
+    id_date INT NOT NULL,
+    id_time INT NOT NULL,
+    id_site INT NOT NULL,
+    temperature FLOAT NOT NULL,
+    humidity FLOAT NOT NULL,
+    rain FLOAT NOT NULL,
+    radiation FLOAT NOT NULL,
+    FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
+    FOREIGN KEY (id_time) REFERENCES DimTime(id_time),
+    FOREIGN KEY (id_site) REFERENCES DimSite(id_site)
 );
