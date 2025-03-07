@@ -152,6 +152,7 @@ CREATE TABLE FactMeteoSwissData (
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     id_site INT NOT NULL,
+    numPrediction INT NOT NULL,
     temperature FLOAT NOT NULL,
     humidity FLOAT NOT NULL,
     rain FLOAT NOT NULL,
