@@ -109,6 +109,8 @@ CREATE TABLE FactEnergyConsumption (
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     energy_consumed FLOAT NOT NULL, 
+    humidity FLOAT NOT NULL,
+    temperature FLOAT NOT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
@@ -119,11 +121,8 @@ CREATE TABLE FactSolarProduction (
     id_time INT NOT NULL,
     id_inverter INT NOT NULL,
     id_status INT NOT NULL,
-    total_energy_produced FLOAT NOT NULL, 
-    energy_produced FLOAT NOT NULL,
-    humidity FLOAT NOT NULL,
-    temperature FLOAT NOT NULL,
-    radation FLOAT NOT NULL,
+    total_energy_produced FLOAT NOT NULL, -- Total energy produced By the whole power plant
+    energy_produced FLOAT NOT NULL, -- Energy produced by 1 inverter
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
