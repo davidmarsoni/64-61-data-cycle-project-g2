@@ -42,10 +42,6 @@ def log_error(phase, error_msg, trace=None):
     else:
         logging.error(f"{phase}: {error_msg}")
 
-def setup_logging():
-    # Use Config's setup_logging method instead
-    Config.setup_logging('data_cleaning')
-
 def send_error_summary():
     """Send an email summarizing all errors encountered during execution
     """
@@ -108,7 +104,15 @@ def save_processed_files(record_file, processed):
 
 @lru_cache(maxsize=100)
 def detect_encoding(file_path, num_bytes=10000):
-    """Detect file encoding with caching for performance"""
+    """Detect the encoding of a file using chardet.
+
+    Args:
+        file_path (_type_): path to the file ethier relative or absolute
+        num_bytes (int, optional): number of bytes to read for detection. Defaults to 10000.
+
+    Returns:
+        _type_: detected encoding
+    """
     with open(file_path, 'rb') as f:
         rawdata = f.read(num_bytes)
     result = chardet.detect(rawdata)
@@ -118,6 +122,7 @@ def detect_encoding(file_path, num_bytes=10000):
 def process_solarlogs(file_path, output_path, encoding, filename):
     """Process Solarlogs files"""
     try:
+        # Read the CSV file with the detected encoding
         data = pd.read_csv(
             file_path,
             encoding=encoding,
@@ -126,10 +131,13 @@ def process_solarlogs(file_path, output_path, encoding, filename):
             engine='python'
         )
         
-        # Drop unwanted columns (if present)
-        # handle the drop of the Unit� affichage colum 3 with the id of the column because the name is not always the same
+        # Handle the drop of te Unit� affichage colum 3 with the id of the column because the name is not always the same
         data = data.drop(columns=[data.columns[2]], errors="ignore")
+        
+        # Drop the row "Valeur Acquisition" if it exists
         data = data.drop(columns=['Valeur Acquisition'], errors="ignore")
+        
+        # Save the filtered data to the output path
         data.to_csv(output_path, index=False)
         logging.info(f"Successfully processed Solarlogs data: {os.path.basename(file_path)}")
         
@@ -150,6 +158,13 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             quoting=csv.QUOTE_NONE,
             engine='python'
         )
+         # Clean column headers first
+        data.columns = [col.strip('"') for col in data.columns]
+        
+        # remove trailing and ending quotes from for all the line if they are present
+        data = data.applymap(lambda x: x.strip('"') if isinstance(x, str) else x)
+        
+        print(data.head())
         
         # correct the date format from 8 janv. 2023 to 2023-01-08 
         month_mapping = {
@@ -157,7 +172,7 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
             'mai': '05', 'juin': '06', 'juil.': '07', 'août': '08',
             'sept.': '09', 'oct.': '10', 'nov.': '11', 'déc.': '12'
         }
-        
+
         def custom_parse_date(date_str):
             if pd.isna(date_str):
                 return None
@@ -172,8 +187,26 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
                 
             month = month_mapping[month_abbr]
             return f"{year}-{month}-{day.zfill(2)}"
-            
+
+        # Save the original date for logging purposes
+        data['Date_original'] = data['Date']
         data['Date'] = data['Date'].apply(custom_parse_date)
+
+        # Try converting to datetime and mark invalid dates as NaT
+        data['Date'] = pd.to_datetime(data['Date'], format='%Y-%m-%d', errors='coerce')
+
+        # Print the row with the invalid date
+        invalid_dates = data[data['Date'].isnull()]
+        if not invalid_dates.empty:
+            logging.warning(f"Invalid dates found in {filename}: {len(invalid_dates)} rows")
+            for index, row in invalid_dates.iterrows():
+                logging.warning(
+                    f"Row {index}: Original Date: {row['Date_original']} - Parsed Date: {row['Date']} - {row['Nom']} - {row['Date de début']} - {row['Date de fin']}"
+                )
+
+        # Drop rows with invalid dates
+        data = data.dropna(subset=['Date'])
+        # TODO =============================
                 
         # Check if quotes need to be stripped
         if data.iloc[0, 0].startswith('"') and data.iloc[0, -1].endswith('"'):
