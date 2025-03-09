@@ -68,7 +68,38 @@ def process_meteo(file_path, output_path, encoding, filename):
         if has_site_column:
             sort_cols.append('Site')
         sort_cols.append('Prediction')
+        
+        try:
+            # Check if dates are in DD.MM.YYYY format
+            if data['Date'].iloc[0].count('.') == 2:
+                data['Date'] = pd.to_datetime(data['Date'], format='%d.%m.%Y')
+            else:
+                # Fallback to automatic format detection
+                data['Date'] = pd.to_datetime(data['Date'])
             
+            # Convert to standard YYYY-MM-DD format
+            data['Date'] = data['Date'].dt.strftime('%Y-%m-%d')
+        except Exception as e:
+            logging.error(f"Date conversion error: {str(e)}")
+            # Try a different approach with dayfirst=True for European date format
+            data['Date'] = pd.to_datetime(data['Date'], dayfirst=True)
+            data['Date'] = data['Date'].dt.strftime('%Y-%m-%d')
+        
+        # Convert time values
+        try:
+            data['Time'] = pd.to_datetime(data['Time'], format='%H:%M:%S', errors='coerce').dt.time
+        except Exception as e:
+            logging.error(f"Time conversion error: {str(e)}")
+            # Try with more flexible parsing
+            data['Time'] = pd.to_datetime(data['Time'], errors='coerce').dt.time
+            
+        # Drop rows with NaT in Date or Time
+        data.dropna(subset=['Date', 'Time'], inplace=True)
+        
+        # Drop duplicates
+        data.drop_duplicates(subset=['Date', 'Time'], inplace=True)
+        
+        # Save the cleaned data  
         df_result.sort_values(by=sort_cols, inplace=True)
         df_result.to_csv(output_path, index=False)
         

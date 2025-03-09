@@ -25,9 +25,7 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         
         # remove trailing and ending quotes from for all the line if they are present
         data = data.applymap(lambda x: x.strip('"') if isinstance(x, str) else x)
-        
-        print(data.head())
-        
+     
         # correct the date format from 8 janv. 2023 to 2023-01-08 
         month_mapping = {
             'janv.': '01', 'févr.': '02', 'mars': '03', 'avr.': '04',
