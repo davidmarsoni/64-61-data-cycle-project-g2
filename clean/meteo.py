@@ -49,9 +49,38 @@ def process_meteo(file_path, output_path, encoding, filename):
             aggfunc='first'
         ).reset_index()
         
-        # Process datetime information - use more efficient method
-        df_result['Date'] = pd.to_datetime(df_result['Time']).dt.date
-        df_result['Time'] = pd.to_datetime(df_result['Time']).dt.time
+        # Process datetime information
+        try:
+            # First check if Time is already a timestamp or string
+            if pd.api.types.is_datetime64_any_dtype(df_result['Time']):
+                # Already datetime type, extract date and time
+                df_result['Date'] = df_result['Time'].dt.strftime('%Y-%m-%d')
+                df_result['Time'] = df_result['Time'].dt.strftime('%H:%M:%S')
+            else:
+                # Check format and convert
+                sample_time = str(df_result['Time'].iloc[0])
+                
+                if 'T' in sample_time:
+                    # ISO format with T separator
+                    datetime_obj = pd.to_datetime(df_result['Time'], format='ISO8601')
+                    df_result['Date'] = datetime_obj.dt.strftime('%Y-%m-%d')
+                    df_result['Time'] = datetime_obj.dt.strftime('%H:%M:%S')
+                else:
+                    # Try generic datetime parsing
+                    datetime_obj = pd.to_datetime(df_result['Time'])
+                    df_result['Date'] = datetime_obj.dt.strftime('%Y-%m-%d')
+                    df_result['Time'] = datetime_obj.dt.strftime('%H:%M:%S')
+        except Exception as dt_error:
+            logging.error(f"Error converting datetime in meteo file: {str(dt_error)}")
+            # Try alternative approach
+            try:
+                # If Time column contains full datetime strings
+                df_result['Date'] = pd.to_datetime(df_result['Time']).dt.strftime('%Y-%m-%d')
+                df_result['Time'] = pd.to_datetime(df_result['Time']).dt.strftime('%H:%M:%S')
+            except:
+                # Last resort - try European format with day first
+                df_result['Date'] = pd.to_datetime(df_result['Time'], dayfirst=True).dt.strftime('%Y-%m-%d')
+                df_result['Time'] = pd.to_datetime(df_result['Time'], dayfirst=True).dt.strftime('%H:%M:%S')
         
         # Rearrange columns in the requested order: Date, Time, Site, Prediction, then measurement columns
         first_cols = ['Date', 'Time']
@@ -60,44 +89,20 @@ def process_meteo(file_path, output_path, encoding, filename):
         first_cols.append('Prediction')
             
         measurement_cols = [col for col in df_result.columns 
-                          if col not in first_cols + ['Date', 'Time']]
+                          if col not in first_cols and col != 'Time']
         df_result = df_result[first_cols + measurement_cols]
         
-        # Sort using the requested order as well
+        # Sort using the requested order
         sort_cols = ['Date', 'Time']
         if has_site_column:
             sort_cols.append('Site')
         sort_cols.append('Prediction')
         
-        try:
-            # Check if dates are in DD.MM.YYYY format
-            if data['Date'].iloc[0].count('.') == 2:
-                data['Date'] = pd.to_datetime(data['Date'], format='%d.%m.%Y')
-            else:
-                # Fallback to automatic format detection
-                data['Date'] = pd.to_datetime(data['Date'])
-            
-            # Convert to standard YYYY-MM-DD format
-            data['Date'] = data['Date'].dt.strftime('%Y-%m-%d')
-        except Exception as e:
-            logging.error(f"Date conversion error: {str(e)}")
-            # Try a different approach with dayfirst=True for European date format
-            data['Date'] = pd.to_datetime(data['Date'], dayfirst=True)
-            data['Date'] = data['Date'].dt.strftime('%Y-%m-%d')
-        
-        # Convert time values
-        try:
-            data['Time'] = pd.to_datetime(data['Time'], format='%H:%M:%S', errors='coerce').dt.time
-        except Exception as e:
-            logging.error(f"Time conversion error: {str(e)}")
-            # Try with more flexible parsing
-            data['Time'] = pd.to_datetime(data['Time'], errors='coerce').dt.time
-            
-        # Drop rows with NaT in Date or Time
-        data.dropna(subset=['Date', 'Time'], inplace=True)
+        # Drop rows with empty dates or times
+        df_result.dropna(subset=['Date', 'Time'], inplace=True)
         
         # Drop duplicates
-        data.drop_duplicates(subset=['Date', 'Time'], inplace=True)
+        df_result.drop_duplicates(subset=['Date', 'Time'], inplace=True)
         
         # Save the cleaned data  
         df_result.sort_values(by=sort_cols, inplace=True)

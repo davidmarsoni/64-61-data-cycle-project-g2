@@ -23,8 +23,9 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
          # Clean column headers first
         data.columns = [col.strip('"') for col in data.columns]
         
-        # remove trailing and ending quotes from for all the line if they are present
-        data = data.applymap(lambda x: x.strip('"') if isinstance(x, str) else x)
+        # Replace deprecated applymap with apply on each column
+        for col in data.select_dtypes(include=['object']).columns:
+            data[col] = data[col].apply(lambda x: x.strip('"') if isinstance(x, str) else x)
      
         # correct the date format from 8 janv. 2023 to 2023-01-08 
         month_mapping = {
@@ -59,20 +60,19 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         invalid_dates = data[data['Date'].isnull()]
         if not invalid_dates.empty:
             logging.warning(f"Invalid dates found in {filename}: {len(invalid_dates)} rows")
-            for index, row in invalid_dates.iterrows():
-                logging.warning(
-                    f"Row {index}: Original Date: {row['Date_original']} - Parsed Date: {row['Date']} - {row['Nom']} - {row['Date de début']} - {row['Date de fin']}"
-                )
+            #for index, row in invalid_dates.iterrows():
+            #    logging.warning(
+            #        f"Row {index}: Original Date: {row['Date_original']} - Parsed Date: {row['Date']} - {row['Nom']} - {row['Date de début']} - {row['Date de fin']}"
+            #    )
 
         # Drop rows with invalid dates
         data = data.dropna(subset=['Date'])
         
         # Check if quotes need to be stripped
         if data.iloc[0, 0].startswith('"') and data.iloc[0, -1].endswith('"'):
-            # Fix deprecated applymap by using DataFrame.map with a Series
-            for col in data.columns:
-                if data[col].dtype == 'object':  # Only process string columns
-                    data[col] = data[col].map(lambda x: x.strip('"') if isinstance(x, str) else x)
+            # Use apply instead of deprecated applymap
+            for col in data.select_dtypes(include=['object']).columns:
+                data[col] = data[col].apply(lambda x: x.strip('"') if isinstance(x, str) else x)
             
             # Clean column headers
             data.columns = [col.strip('"') if isinstance(col, str) else col for col in data.columns]
