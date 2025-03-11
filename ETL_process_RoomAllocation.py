@@ -65,8 +65,6 @@ class DimRoom(Base):
     
     id_room = Column(Integer, primary_key=True, autoincrement=True)
     roomName = Column(String(255), nullable=False)
-    roomFullName = Column(String(255), nullable=False)
-
 class DimUser(Base):
     __tablename__ = 'DimUser'
     
@@ -236,7 +234,7 @@ class RoomAllocationETL:
         self.time_cache[time_key] = new_time.id_time
         return new_time.id_time
         
-    def get_or_create_room_id(self, room_name, room_full_name):
+    def get_or_create_room_id(self, room_name):
         """Get or create room dimension entry"""
         if room_name in self.room_cache:
             return self.room_cache[room_name]
@@ -253,7 +251,6 @@ class RoomAllocationETL:
         # Create new room
         new_room = DimRoom(
             roomName=room_name,
-            roomFullName=room_full_name
         )
         self.session.add(new_room)
         self.session.flush()
@@ -463,21 +460,17 @@ class RoomAllocationETL:
                     
                     # Normalize column names - handle common naming variations
                     column_mapping = {
-                        'Nom': 'room_name',
-                        'Nom entier': 'room_full_name',
+                        'room_name': 'room_name',
                         'Date': 'booking_date',
-                        'Date de dÃ©but': 'start_time',
-                        'Date de début': 'start_time',
-                        'Date de fin': 'end_time',
-                        'Type de rÃ©servation': 'booking_type',
-                        'Type de réservation': 'booking_type',
-                        'Codes': 'code',
-                        "Nom de l'utilisateur": 'username',
-                        'Classe': 'class_name',
-                        'ActivitÃ©': 'activity',
-                        'Activité': 'activity',
-                        'Professeur': 'professor',
-                        'Division': 'division'
+                        'start_time': 'start_time',
+                        'end_time': 'end_time',
+                        'reservation_type': 'booking_type',
+                        'codes': 'code',
+                        "user_name": 'username',
+                        'class': 'class_name',
+                        'activity': 'activity',
+                        'professor': 'professor',
+                        'division': 'division'
                     }
                     
                     # Rename columns based on mapping
@@ -493,7 +486,7 @@ class RoomAllocationETL:
                             date_id = self.get_or_create_date_id(booking_date)
                             time_start_id = self.get_or_create_time_id(str(row['start_time']))
                             time_end_id = self.get_or_create_time_id(str(row['end_time']))
-                            room_id = self.get_or_create_room_id(row['room_name'], row['room_full_name'])
+                            room_id = self.get_or_create_room_id(row['room_name'])
                             user_id = self.get_or_create_user_id(row['username'])
                             
                             # Skip if missing critical IDs

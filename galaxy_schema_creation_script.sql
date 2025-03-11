@@ -36,8 +36,7 @@ CREATE TABLE DimTime (
 
 CREATE TABLE DimRoom (
     id_room INT PRIMARY KEY IDENTITY(1,1),
-    roomName VARCHAR(255) NOT NULL,
-    roomFullName VARCHAR(255) NOT NULL
+    roomName VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimUser (
@@ -131,6 +130,7 @@ CREATE TABLE FactSolarProduction (
     id_status INT NOT NULL,
     total_energy_produced FLOAT NOT NULL, -- Total energy produced By the whole power plant
     energy_produced FLOAT NOT NULL, -- Energy produced by 1 inverter
+    error_count INT NOT NULL, -- Number of errors for the inverter
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );

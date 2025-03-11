@@ -7,9 +7,8 @@ import os
 import re
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, inspect
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import exists
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime
@@ -74,12 +73,13 @@ class DimStatus(Base):
 class FactSolarProduction(Base):
     __tablename__ = 'FactSolarProduction'
     
-    id_measurement = Column(Integer, primary_key=True, autoincrement=True)
+    id_FactSolarProduction = Column(Integer, primary_key=True, autoincrement=True)
     id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
     id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    id_inverter = Column(Integer, ForeignKey('DimInverter.id_inverter'), nullable=False)
-    power_generated = Column(Float, nullable=False)
     id_status = Column(Integer, ForeignKey('DimStatus.id_status'), nullable=True)
+    id_inverter = Column(Integer, ForeignKey('DimInverter.id_inverter'), nullable=False)
+    total_energy_produced = Column(Float, nullable=False)
+    energy_produced = Column(Float, nullable=False)
     error_count = Column(Integer, default=0)
 
 
@@ -89,6 +89,10 @@ class SolarProductionETL:
     def __init__(self):
         """Initialize the ETL process"""
         self.engine = create_engine(CONNECTION_STRING)
+        
+        # Check if tables exist and create them if they don't
+        self.create_tables_if_not_exist()
+        
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         
@@ -107,6 +111,33 @@ class SolarProductionETL:
         
         # Pre-load dimension caches
         self._preload_dimensions()
+    
+    def create_tables_if_not_exist(self):
+        """Check if required tables exist and create them if they don't"""
+        inspector = inspect(self.engine)
+        tables = inspector.get_table_names()
+        
+        # Create all tables defined in Base if they don't exist
+        if not all(table in tables for table in ['DimDate', 'DimTime', 'DimInverter', 'DimStatus', 'FactSolarProduction']):
+            logger.info("Creating database tables that don't exist...")
+            Base.metadata.create_all(self.engine)
+            logger.info("Tables created successfully")
+        else:
+            logger.info("All required tables already exist")
+            
+            # Check if columns match our model
+            for table_name in ['FactSolarProduction', 'DimDate', 'DimTime', 'DimInverter', 'DimStatus']:
+                if table_name in tables:
+                    columns = [col['name'] for col in inspector.get_columns(table_name)]
+                    logger.info(f"Table {table_name} columns: {', '.join(columns)}")
+                    
+                    # Verify key columns for FactSolarProduction
+                    if table_name == 'FactSolarProduction':
+                        expected_columns = ['id_FactSolarProduction', 'id_date', 'id_time', 'id_inverter', 'id_status', 'total_energy_produced', 'energy_produced', 'error_count']
+                        missing = [col for col in expected_columns if col not in columns]
+                        if missing:
+                            logger.warning(f"Missing columns in {table_name}: {', '.join(missing)}")
+                            raise ValueError(f"Database schema mismatch. Missing columns in {table_name}: {', '.join(missing)}")
 
     def _preload_dimensions(self):
         """Pre-load dimension tables to minimize database queries"""
@@ -251,7 +282,7 @@ class SolarProductionETL:
         return self.session.query(FactSolarProduction).filter(
             FactSolarProduction.id_date == date_id,
             FactSolarProduction.id_time == time_id,
-            FactSolarProduction.id_inverter == inverter_id
+            FactSolarProduction.id_inverter == inverter_id 
         ).count() > 0
         
     def process_solar_panels_data(self):
@@ -284,9 +315,42 @@ class SolarProductionETL:
                 try:
                     df = pd.read_csv(file_path)
                     
-                    # Standardize date and time formats
-                    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-                    df['Time'] = pd.to_datetime(df['Time']).dt.strftime('%H:%M:%S')
+                    # Check for required columns
+                    required_columns = ['Date', 'Time', 'INV', 'Pac']
+                    if not all(col in df.columns for col in required_columns):
+                        missing = [col for col in required_columns if col not in df.columns]
+                        logger.warning(f"Missing required columns in {file_path}: {', '.join(missing)}")
+                        continue
+                    
+                    # Handle 'DaySum' column if missing
+                    if 'DaySum' not in df.columns:
+                        logger.info(f"'DaySum' column not found in {file_path}, using Pac as total_energy_produced")
+                        df['DaySum'] = df['Pac']
+                    
+                    # Standardize date and time formats with explicit format to avoid warnings
+                    try:
+                        # Handle different possible date formats
+                        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                        
+                        # Try with different time formats to handle various input formats
+                        time_formats = ['%H:%M:%S', '%H:%M', '%I:%M:%S %p', '%I:%M %p']
+                        for time_format in time_formats:
+                            try:
+                                df['Time'] = pd.to_datetime(df['Time'], format=time_format, errors='coerce').dt.strftime('%H:%M:%S')
+                                # If successful (no NaT values), break out of the loop
+                                if not df['Time'].isna().any():
+                                    break
+                            except ValueError:
+                                continue
+                        
+                        # If still has NaT values, try the flexible parser as last resort
+                        if df['Time'].isna().any():
+                            df['Time'] = pd.to_datetime(df['Time'], errors='coerce').dt.strftime('%H:%M:%S')
+                            
+                        # Drop rows where date or time couldn't be parsed
+                        df = df.dropna(subset=['Date', 'Time'])
+                    except Exception as e:
+                        logger.warning(f"Error parsing dates/times in {file_path}: {str(e)}")
                     
                     # Process each row
                     for _, row in df.iterrows():
@@ -304,7 +368,7 @@ class SolarProductionETL:
                             
                         # Get status ID (if available)
                         status_id = None
-                        if pd.notna(row['Status']):
+                        if pd.notna(row.get('Status')):
                             status_id = self.get_or_create_status_id(int(row['Status']))
                             
                         # Create new fact record
@@ -312,9 +376,10 @@ class SolarProductionETL:
                             id_date=date_id,
                             id_time=time_id,
                             id_inverter=inverter_id,
-                            power_generated=float(row['Pac']),
+                            total_energy_produced=float(row['DaySum']),
+                            energy_produced=float(row['Pac']),
                             id_status=status_id,
-                            error_count=int(row['Error']) if pd.notna(row['Error']) else 0
+                            error_count=int(row.get('Error', 0)) if pd.notna(row.get('Error')) else 0
                         )
                         self.session.add(new_fact)
                         
@@ -374,13 +439,43 @@ class SolarProductionETL:
                 try:
                     df = pd.read_csv(file_path)
                     
-                    # Standardize date and time formats
-                    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-                    df['Time'] = pd.to_datetime(df['Heure']).dt.strftime('%H:%M:%S')
+                    # Check for required columns
+                    required_columns = ['Date', 'Heure', 'INV', 'Variation']
+                    if not all(col in df.columns for col in required_columns):
+                        missing = [col for col in required_columns if col not in df.columns]
+                        logger.warning(f"Missing required columns in {file_path}: {', '.join(missing)}")
+                        continue
+                    
+                    # Standardize date and time formats with explicit format to avoid warnings
+                    try:
+                        # Handle different possible date formats
+                        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                        
+                        # For 'Heure' column (time column in French)
+                        time_formats = ['%H:%M:%S', '%H:%M', '%I:%M:%S %p', '%I:%M %p']
+                        for time_format in time_formats:
+                            try:
+                                df['Time'] = pd.to_datetime(df['Heure'], format=time_format, errors='coerce').dt.strftime('%H:%M:%S')
+                                # If successful (no NaT values), break out of the loop
+                                if not df['Time'].isna().any():
+                                    break
+                            except ValueError:
+                                continue
+                        
+                        # If still has NaT values, try the flexible parser as last resort
+                        if 'Time' not in df.columns or df['Time'].isna().any():
+                            df['Time'] = pd.to_datetime(df['Heure'], errors='coerce').dt.strftime('%H:%M:%S')
+                            
+                        # Drop rows where date or time couldn't be parsed
+                        df = df.dropna(subset=['Date', 'Time'])
+                    except Exception as e:
+                        logger.warning(f"Error parsing dates/times in {file_path}: {str(e)}")
                     
                     # Filter for power measurements
-                    power_data = df[df['UnitDisplay'].str.contains('kW|watt|kWh', case=False, na=False)]
-
+                    if 'UnitDisplay' in df.columns:
+                        power_data = df[df['UnitDisplay'].str.contains('kW|watt|kWh', case=False, na=False)]
+                    else:
+                        power_data = df  # Use all data if no UnitDisplay column
                     
                     # Process each row
                     for _, row in power_data.iterrows():
@@ -395,14 +490,17 @@ class SolarProductionETL:
                         # Skip if record already exists (might have been added from SOLAR PANELS)
                         if self.record_exists(date_id, time_id, inverter_id):
                             continue
+                        
+                        # Use Variation for both energy values since historical data might not have separate total
+                        variation_value = float(row['Variation'])
                             
                         # Create new fact record with power variation data
-                        # Note: Status will be NULL since this file doesn't have status information
                         new_fact = FactSolarProduction(
                             id_date=date_id,
                             id_time=time_id,
                             id_inverter=inverter_id,
-                            power_generated=float(row['Variation']),
+                            energy_produced=variation_value,
+                            total_energy_produced=variation_value,  # Use same value for both since historical data
                             id_status=None,
                             error_count=0
                         )
