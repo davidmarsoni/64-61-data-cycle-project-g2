@@ -40,7 +40,6 @@ def process_solarlogs(file_path, output_path, encoding, filename):
         # Drop duplicates
         data.drop_duplicates(subset=['Date', 'Time'], inplace=True)
         # Save the cleaned data
-        print(data.head())
         data.to_csv(output_path, index=False)
         logging.info(f"Successfully processed Solarlogs data: {os.path.basename(file_path)}")
         

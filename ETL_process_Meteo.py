@@ -1,55 +1,50 @@
 # Required library imports
-import pyodbc
 import os
 import pandas as pd
-from dotenv import load_dotenv
+import logging
+import traceback
 from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
+from ETL.utils.utils import create_connection, get_connection_string
+from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
+from ETL.db.base import get_session, init_db
+from ETL.db.models import FactMeteoSwissData
+from ETL.Dim.DimDate import get_or_create_date
+from ETL.Dim.DimTime import get_or_create_time
+from ETL.Dim.DimSite import get_or_create_site
+from config import ensure_installed, Config
 
-# Load environment variables and set configuration
-load_dotenv()
-BASE_DIR = os.getenv('BASE_DIR')
-current_date = datetime.now().strftime('%Y-%m-%d')
-CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}") if BASE_DIR else None
+# Ensure required packages are installed
+ensure_installed('pandas')
+ensure_installed('sqlalchemy')
 
 SUBFOLDERS = {
     "Meteo": ["Pred"]
 }
 
-def create_connection():
-    """Create database connection using Windows Authentication"""
-    server = '.' 
-    database = 'data_cycle_db'
-    try:
-        conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;'
-        conn = pyodbc.connect(conn_str)
-        print("Connection successful!")
-        return conn
-    except Exception as e:
-        print(f"Error connecting to database: {str(e)}")
-        return None
-
 def get_files_by_category():
     """Get all CSV files organized by category"""
     files_by_category = {}
     
-    if not CLEAN_DATA_DIR or not os.path.exists(CLEAN_DATA_DIR):
-        print(f"Directory does not exist: {CLEAN_DATA_DIR}")
+    if not Config.CLEAN_DATA_DIR or not os.path.exists(Config.CLEAN_DATA_DIR):
+        log_error("File Search", f"Directory does not exist: {Config.CLEAN_DATA_DIR}")
         return files_by_category
         
-    data_folders = [f for f in os.listdir(BASE_DIR) if f.startswith('cleaned_data_')]
+    data_folders = [f for f in os.listdir(Config.BASE_DIR) if f.startswith('cleaned_data_')]
     if not data_folders:
-        print("No cleaned_data folders found")
+        log_error("File Search", "No cleaned_data folders found")
         return files_by_category
         
     latest_data_folder = sorted(data_folders)[-1]
-    actual_data_dir = os.path.join(BASE_DIR, latest_data_folder)
+    actual_data_dir = os.path.join(Config.BASE_DIR, latest_data_folder)
     
-    print(f"Using data folder: {actual_data_dir}")
+    logging.info(f"Using data folder: {actual_data_dir}")
     
     # Process Meteo folder
     meteo_folder_path = os.path.join(actual_data_dir, "Meteo")
     if not os.path.exists(meteo_folder_path):
-        print(f"Meteo folder path does not exist: {meteo_folder_path}")
+        log_error("File Search", f"Meteo folder path does not exist: {meteo_folder_path}")
         return files_by_category
         
     files_by_category["Meteo"] = {}
@@ -60,81 +55,9 @@ def get_files_by_category():
             if "Pred" not in files_by_category["Meteo"]:
                 files_by_category["Meteo"]["Pred"] = []
             files_by_category["Meteo"]["Pred"].append(os.path.join(meteo_folder_path, f))
-            print(f"Found prediction file: {f}")
+            logging.info(f"Found prediction file: {f}")
     
     return files_by_category
-
-def populate_dim_date(connection, date_obj):
-    """Add or get date from DimDate"""
-    cursor = connection.cursor()
-    try:
-        # Check if date exists
-        cursor.execute("""
-            SELECT id_date FROM DimDate 
-            WHERE [year] = ? AND [month] = ? AND [day] = ?
-        """, (date_obj.year, date_obj.month, date_obj.day))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        
-        # Insert new date
-        cursor.execute("""
-            INSERT INTO DimDate ([year], [month], [day])
-            VALUES (?, ?, ?)
-        """, (date_obj.year, date_obj.month, date_obj.day))
-        connection.commit()
-        cursor.execute("SELECT @@IDENTITY")
-        return cursor.fetchone()[0]
-    except Exception as e:
-        print(f"Error in populate_dim_date: {str(e)}")
-        connection.rollback()
-        raise
-
-def populate_dim_time(connection, time_obj):
-    """Add or get time from DimTime"""
-    cursor = connection.cursor()
-    try:
-        # Check if time exists
-        cursor.execute("""
-            SELECT id_time FROM DimTime 
-            WHERE [hour] = ? AND [minute] = ?
-        """, (time_obj.hour, time_obj.minute))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        
-        # Insert new time
-        cursor.execute("""
-            INSERT INTO DimTime ([hour], [minute])
-            VALUES (?, ?)
-        """, (time_obj.hour, time_obj.minute))
-        connection.commit()
-        cursor.execute("SELECT @@IDENTITY")
-        return cursor.fetchone()[0]
-    except Exception as e:
-        print(f"Error in populate_dim_time: {str(e)}")
-        connection.rollback()
-        raise
-
-def populate_dim_site(connection, site_name):
-    """Add or get site from DimSite"""
-    cursor = connection.cursor()
-    try:
-        # Check if site exists
-        cursor.execute("SELECT id_site FROM DimSite WHERE siteName = ?", (site_name,))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        
-        # Insert new site
-        cursor.execute("INSERT INTO DimSite (siteName) VALUES (?)", (site_name,))
-        connection.commit()
-        cursor.execute("SELECT @@IDENTITY")
-        return cursor.fetchone()[0]
-    except Exception as e:
-        print(f"Error in populate_dim_site: {str(e)}")
-        connection.rollback()
-        raise
 
 def get_value_for_date_time(df, date_str, time_str, column_name):
     """Get value from dataframe for specific date and time"""
@@ -172,126 +95,264 @@ def validate_meteo_row(row):
     except Exception as e:
         return False, f"Validation error: {str(e)}"
 
-def process_meteo_files(connection, meteo_folder):
-    """Process meteorological data files and insert into database"""
+def process_meteo_files(session, meteo_folder):
+    """Process meteorological data files and insert into database using ORM"""
     try:
+        # Get all prediction files
         pred_files = [f for f in os.listdir(meteo_folder) if f.startswith('Pred_') and f.endswith('.csv')]
-        stats = {'processed': 0, 'inserted': 0, 'duplicates': 0}
+        stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
         
-        print(f"\nFound {len(pred_files)} files to process")
+        logging.info(f"Found {len(pred_files)} files to process")
+        
+        # Preload all dimension data to reduce database queries
+        # We need to join with the actual dimension tables to get the needed attributes
+        logging.info("Preloading dimension data...")
+        
+        from ETL.db.models import DimDate, DimTime, DimSite
+        
+        # Fetch all dates from dimension table - fix attribute names to match schema
+        all_dates = {}
+        for date in session.query(DimDate).all():
+            date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+            all_dates[date_str] = date.id_date
+        logging.info(f"Preloaded {len(all_dates)} dates")
+        
+        # Fetch all times from dimension table - fix attribute names to match schema
+        all_times = {}
+        for time in session.query(DimTime).all():
+            time_str = f"{time.hour:02d}:{time.minute:02d}:00"
+            all_times[time_str] = time.id_time
+        logging.info(f"Preloaded {len(all_times)} times")
+        
+        # Fetch all sites from dimension table - fix attribute names to match schema
+        all_sites = {}
+        for site in session.query(DimSite).all():
+            # Assuming site has a name attribute - adjust if it's called something different
+            all_sites[site.siteName] = site.id_site
+        logging.info(f"Preloaded {len(all_sites)} sites")
+        
+        # Create a dictionary for existing records to enable updates
+        logging.info("Preloading existing records for updating...")
+        existing_records = {}
+        for record in session.query(
+            FactMeteoSwissData
+        ).all():
+            record_key = (record.id_date, record.id_time, record.id_site, record.numPrediction)
+            existing_records[record_key] = record
+        
+        logging.info(f"Preloaded {len(existing_records)} existing records for checking")
         
         for i, pred_file in enumerate(pred_files, 1):
-            print(f"\nProcessing file {i}/{len(pred_files)}: {pred_file}")
+            logging.info(f"Processing file {i}/{len(pred_files)}: {pred_file}")
             file_path = os.path.join(meteo_folder, pred_file)
-            meteo_df = pd.read_csv(file_path)
-            file_stats = {'processed': 0, 'inserted': 0, 'duplicates': 0}
-            
-            # Standardize dates and times
-            meteo_df['Date'] = pd.to_datetime(meteo_df['Date'], format='%Y-%m-%d').dt.strftime('%Y-%m-%d')
-            meteo_df['Time'] = pd.to_datetime(meteo_df['Time'], format='%H:%M:%S').dt.strftime('%H:%M:%S')
-            
-            # Create dimension mappings
-            mappings = {
-                'date': {d: populate_dim_date(connection, datetime.strptime(d, '%Y-%m-%d')) 
-                        for d in set(meteo_df['Date'])},
-                'time': {t: populate_dim_time(connection, datetime.strptime(t, '%H:%M:%S')) 
-                        for t in set(meteo_df['Time'])},
-                'site': {s: populate_dim_site(connection, s) 
-                        for s in set(meteo_df['Site'])}
-            }
-            
-            cursor = connection.cursor()
-            
-            # Process each row
-            for _, row in meteo_df.iterrows():
-                file_stats['processed'] += 1
+            try:
+                meteo_df = pd.read_csv(file_path)
+                file_stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
                 
-                # Get dimension IDs
-                date_id = mappings['date'].get(row['Date'])
-                time_id = mappings['time'].get(row['Time'])
-                site_id = mappings['site'].get(row['Site'])
-                prediction_num = int(row['Prediction'])
+                # Standardize dates and times
+                meteo_df['Date'] = pd.to_datetime(meteo_df['Date'], format='%Y-%m-%d').dt.strftime('%Y-%m-%d')
+                meteo_df['Time'] = pd.to_datetime(meteo_df['Time'], format='%H:%M:%S').dt.strftime('%H:%M:%S')
                 
-                # Check for exact duplicate
-                cursor.execute("""
-                    SELECT 1 FROM FactMeteoSwissData 
-                    WHERE id_date = ? AND id_time = ? AND id_site = ? AND numPrediction = ?
-                    AND temperature = ? AND humidity = ? AND rain = ? AND radiation = ?
-                """, (
-                    date_id, time_id, site_id, prediction_num,
-                    float(row['PRED_T_2M_ctrl']),
-                    float(row['PRED_RELHUM_2M_ctrl']),
-                    float(row['PRED_TOT_PREC_ctrl']),
-                    float(row['PRED_GLOB_ctrl'])
-                ))
+                # Create dimension mappings
+                mappings = {
+                    'date': {},
+                    'time': {},
+                    'site': {}
+                }
                 
-                if cursor.fetchone():
-                    file_stats['duplicates'] += 1
-                    continue
+                # Batch insertion
+                batch_size = 1000
+                records_to_insert = []
+                records_to_update = []
                 
-                # Insert new record
-                cursor.execute("""
-                    INSERT INTO FactMeteoSwissData 
-                    (id_date, id_time, id_site, numPrediction, 
-                     temperature, humidity, rain, radiation)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    date_id, time_id, site_id, prediction_num,
-                    float(row['PRED_T_2M_ctrl']),
-                    float(row['PRED_RELHUM_2M_ctrl']),
-                    float(row['PRED_TOT_PREC_ctrl']),
-                    float(row['PRED_GLOB_ctrl'])
-                ))
-                file_stats['inserted'] += 1
+                # Process each row
+                for _, row in meteo_df.iterrows():
+                    file_stats['processed'] += 1
+                    
+                    try:
+                        # Get dimension IDs
+                        date_str = row['Date']
+                        if date_str not in mappings['date']:
+                            if date_str in all_dates:
+                                mappings['date'][date_str] = all_dates[date_str]
+                            else:
+                                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                                date_id = get_or_create_date(session, date_obj)
+                                mappings['date'][date_str] = date_id
+                                all_dates[date_str] = date_id
+                        date_id = mappings['date'][date_str]
+                        
+                        time_str = row['Time']
+                        if time_str not in mappings['time']:
+                            if time_str in all_times:
+                                mappings['time'][time_str] = all_times[time_str]
+                            else:
+                                time_obj = datetime.strptime(time_str, '%H:%M:%S')
+                                time_id = get_or_create_time(session, time_obj)
+                                mappings['time'][time_str] = time_id
+                                all_times[time_str] = time_id
+                        time_id = mappings['time'][time_str]
+                        
+                        site_name = row['Site']
+                        if site_name not in mappings['site']:
+                            if site_name in all_sites:
+                                mappings['site'][site_name] = all_sites[site_name]
+                            else:
+                                site_id = get_or_create_site(session, site_name)
+                                mappings['site'][site_name] = site_id
+                                all_sites[site_name] = site_id
+                        site_id = mappings['site'][site_name]
+                        
+                        prediction_num = int(row['Prediction'])
+                        
+                        # New data values
+                        new_temperature = float(row['PRED_T_2M_ctrl'])
+                        new_humidity = float(row['PRED_RELHUM_2M_ctrl'])
+                        new_rain = float(row['PRED_TOT_PREC_ctrl'])
+                        new_radiation = float(row['PRED_GLOB_ctrl'])
+                        
+                        # Check if record exists and update it if values changed
+                        record_key = (date_id, time_id, site_id, prediction_num)
+                        
+                        if record_key in existing_records:
+                            # Get existing record
+                            existing_record = existing_records[record_key]
+                            
+                            # Check if any values have changed
+                            values_changed = (
+                                abs(existing_record.temperature - new_temperature) > 0.001 or
+                                abs(existing_record.humidity - new_humidity) > 0.001 or
+                                abs(existing_record.rain - new_rain) > 0.001 or
+                                abs(existing_record.radiation - new_radiation) > 0.001
+                            )
+                            
+                            if values_changed:
+                                # Update existing record with new values
+                                existing_record.temperature = new_temperature
+                                existing_record.humidity = new_humidity
+                                existing_record.rain = new_rain
+                                existing_record.radiation = new_radiation
+                                file_stats['updated'] += 1
+                            else:
+                                file_stats['unchanged'] += 1
+                        else:
+                            # Add new record to batch for insertion
+                            new_record = FactMeteoSwissData(
+                                id_date=date_id,
+                                id_time=time_id,
+                                id_site=site_id,
+                                numPrediction=prediction_num,
+                                temperature=new_temperature,
+                                humidity=new_humidity,
+                                rain=new_rain,
+                                radiation=new_radiation
+                            )
+                            session.add(new_record)
+                            file_stats['inserted'] += 1
+                            
+                            # Add to existing records dictionary
+                            existing_records[record_key] = new_record
+                        
+                    except Exception as row_error:
+                        error_trace = traceback.format_exc()
+                        log_error("Row Processing", f"Error processing row in file {pred_file}: {row_error}", error_trace)
+                        continue
+                    
+                    # Commit every batch_size records
+                    if (file_stats['processed'] % batch_size) == 0:
+                        try:
+                            session.commit()
+                            logging.info(f"Committed batch at {file_stats['processed']} records")
+                        except Exception as batch_error:
+                            error_trace = traceback.format_exc()
+                            log_error("Batch Commit", f"Error during batch commit: {batch_error}", error_trace)
+                            session.rollback()
                 
-                # Commit every 10000 rows
-                if file_stats['processed'] % 10000 == 0:
-                    connection.commit()
+                # Commit any remaining changes
+                try:
+                    session.commit()
+                    logging.info(f"Committed final batch")
+                except Exception as batch_error:
+                    error_trace = traceback.format_exc()
+                    log_error("Final Batch Commit", f"Error during final batch commit: {batch_error}", error_trace)
+                    session.rollback()
+                
+                # Update file statistics
+                logging.info(f"File complete: {pred_file}")
+                logging.info(f"Rows processed: {file_stats['processed']}")
+                logging.info(f"Rows inserted: {file_stats['inserted']}")
+                logging.info(f"Rows updated: {file_stats['updated']}")
+                logging.info(f"Rows unchanged: {file_stats['unchanged']}")
+                
+                # Update total statistics
+                stats['processed'] += file_stats['processed']
+                stats['inserted'] += file_stats['inserted']
+                stats['updated'] += file_stats['updated']
+                stats['unchanged'] += file_stats['unchanged']
+                
+            except Exception as file_error:
+                error_trace = traceback.format_exc()
+                log_error("File Processing", f"Error processing file {pred_file}: {file_error}", error_trace)
+                continue
             
-            connection.commit()
-            
-            # Update file statistics
-            print(f"File complete: {pred_file}")
-            print(f"- Rows processed: {file_stats['processed']}")
-            print(f"- Rows inserted: {file_stats['inserted']}")
-            print(f"- Duplicates found: {file_stats['duplicates']}")
-            
-            # Update total statistics
-            stats['processed'] += file_stats['processed']
-            stats['inserted'] += file_stats['inserted']
-            stats['duplicates'] += file_stats['duplicates']
-            
-        print("\n=== Final Summary ===")
-        print(f"Total Processed: {stats['processed']}")
-        print(f"Total Inserted: {stats['inserted']}")
-        print(f"Total Duplicates: {stats['duplicates']}")
-        print("===================")
+        logging.info("=== Final Summary ===")
+        logging.info(f"Total Processed: {stats['processed']}")
+        logging.info(f"Total Inserted: {stats['inserted']}")
+        logging.info(f"Total Updated: {stats['updated']}")
+        logging.info(f"Total Unchanged: {stats['unchanged']}")
+        logging.info("===================")
         
+    except SQLAlchemyError as e:
+        error_trace = traceback.format_exc()
+        log_error("Database", f"Database Error: {str(e)}", error_trace)
+        session.rollback()
+        raise
     except Exception as e:
-        print(f"Error: {str(e)}")
-        connection.rollback()
+        error_trace = traceback.format_exc()
+        log_error("Processing", f"Processing Error: {str(e)}", error_trace)
+        session.rollback()
         raise
 
 def populate_dim_tables_and_facts():
     """Main ETL process"""
-    connection = create_connection()
-    if not connection:
+    # Setup logging for the ETL process
+    setup_logging("Meteo ETL")
+    logging.info("Starting Meteo ETL process")
+    
+    # First ensure tables exist
+    try:
+        init_db()
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Database Init", f"Error initializing database: {str(e)}", error_trace)
+        send_error_summary("Meteo ETL")
+        return
+        
+    session = get_session()
+    if not session:
+        log_error("Database Session", "Failed to create database session")
+        send_error_summary("Meteo ETL")
         return
     
     try:
-        latest_folder = sorted([f for f in os.listdir(BASE_DIR) if f.startswith('cleaned_data_')])[-1]
-        meteo_folder = os.path.join(BASE_DIR, latest_folder, "Meteo")
+        meteo_folder = os.path.join(Config.BASE_DIR, Config.CLEAN_DATA_DIR, "Meteo")
         
         if os.path.exists(meteo_folder):
-            process_meteo_files(connection, meteo_folder)
+            process_meteo_files(session, meteo_folder)
         else:
-            print(f"Error: No Meteo folder in {latest_folder}")
+            log_error("Folder Access", f"Error: No Meteo folder in {Config.CLEAN_DATA_DIR}")
             
     except Exception as e:
-        print(f"ETL Error: {str(e)}")
-        connection.rollback()
+        error_trace = traceback.format_exc()
+        log_error("ETL Process", f"ETL Error: {str(e)}", error_trace)
+        session.rollback()
     finally:
-        connection.close()
+        session.close()
+        
+        # Send error summary if there were any errors
+        send_error_summary("Meteo ETL")
+        
+        logging.info("Meteo ETL process completed")
 
 if __name__ == "__main__":
     populate_dim_tables_and_facts()
