@@ -31,12 +31,61 @@ def ensure_installed(package_name):
             logging.error(f"Failed to install {package_name}: {e}")
             sys.exit(1)
 
-# Ensure dotenv is installed before we try to import it
+# Ensure dotenv is installed before we try to import it (for fallback)
 ensure_installed('python-dotenv')
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Ensure keyring is installed for Windows Credential Manager
+ensure_installed('keyring')
+import keyring
+
+# Load environment variables from .env file (for non-sensitive config)
 load_dotenv()
+
+class CredentialManager:
+    """Manage credentials using Windows Credential Manager"""
+    
+    # Service name for storing credentials in Windows Credential Manager
+    SERVICE_NAME = "DataCollectorApp"
+    
+    @staticmethod
+    def get_credential(username, fallback_env_var=None):
+        """Get password for the given username from Windows Credential Manager.
+        
+        Args:
+            username (str): The username to retrieve credentials for
+            fallback_env_var (str, optional): Environment variable name to use as fallback
+            
+        Returns:
+            str: The password for the username or None if not found
+        """
+        password = keyring.get_password(CredentialManager.SERVICE_NAME, username)
+        
+        # If password not found in Credential Manager and fallback provided, try environment variable
+        if password is None and fallback_env_var:
+            password = os.getenv(fallback_env_var)
+            if password:
+                logging.info(f"Using {fallback_env_var} from .env file as fallback")
+        
+        return password
+    
+    @staticmethod
+    def set_credential(username, password):
+        """Set or update credentials in Windows Credential Manager.
+        
+        Args:
+            username (str): The username to store
+            password (str): The password to store
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            keyring.set_password(CredentialManager.SERVICE_NAME, username, password)
+            return True
+        except Exception as e:
+            logging.error(f"Failed to set credentials: {e}")
+            return False
 
 class Config:
     """
@@ -48,20 +97,20 @@ class Config:
     DATA_DIR = os.path.join(BASE_DIR, f"collected_data_{current_date}") if BASE_DIR else None
     CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}") if BASE_DIR else None
     
-    # Credentials
+    # Credentials - we'll set these during setup to use Credential Manager
     SMB_HOST = os.getenv('SMB_HOST')
     SFTP_HOST = os.getenv('SFTP_HOST')
     SFTP_PORT = int(os.getenv('SFTP_PORT')) if os.getenv('SFTP_PORT') else None
-    USERNAME = os.getenv('DATA_USERNAME')
-    PASSWORD = os.getenv('DATA_PASSWORD')
+    USERNAME = None  # Will be set during setup
+    PASSWORD = None  # Will be set during setup
     
     # Record files
     SMB_RECORD_FILE = os.path.join(BASE_DIR, "downloaded_smb_files.txt") if BASE_DIR else None
     SFTP_RECORD_FILE = os.path.join(BASE_DIR, "downloaded_sftp_files.txt") if BASE_DIR else None
     
-    # Email configuration
+    # Email configuration - we'll set these during setup to use Credential Manager
     GMAIL_SENDER = os.getenv('GOOGLE_EMAIL_SENDER')
-    GMAIL_PASSWORD = os.getenv('APP_PASSWORD_GOOGLE_PASSWORD')
+    GMAIL_PASSWORD = None  # Will be set during setup
     GMAIL_RECIPIENT = os.getenv('GOOGLE_EMAIL_DESTINATOR')
     
     # Dictionary of shares and all the subfolders
@@ -86,13 +135,42 @@ class Config:
     MIN_PREFIX_SOLARLOGS = "min"
     
     @classmethod
-    def setup(cls,file_type):
+    def setup(cls, file_type):
         """
         Setup the configuration by validating and creating necessary directories
         """
+        # Try to get credentials from Windows Credential Manager first
+        cls.load_credentials()
+        
+        # Then proceed with normal setup
         cls.validate_env_config()
         cls.setup_logging(file_type)
         cls.create_directories(file_type)
+    
+    @classmethod
+    def load_credentials(cls):
+        """
+        Load credentials from Windows Credential Manager with fallback to .env
+        """
+        # Get main connection credentials
+        username = os.getenv('DATA_USERNAME')
+        if username:
+            cls.USERNAME = username
+            # Try to get password from Credential Manager first, then fallback to .env
+            cls.PASSWORD = CredentialManager.get_credential(username, 'DATA_PASSWORD')
+            
+            # If using from .env file, offer to save to Windows Credential Manager
+            if cls.PASSWORD and os.getenv('DATA_PASSWORD'):
+                logging.info("Using password from .env file. Consider storing it in Windows Credential Manager for better security.")
+        
+        # Get email credentials
+        email = cls.GMAIL_SENDER
+        if email:
+            cls.GMAIL_PASSWORD = CredentialManager.get_credential(email, 'APP_PASSWORD_GOOGLE_PASSWORD')
+            
+            # If using from .env file, offer to save to Windows Credential Manager
+            if cls.GMAIL_PASSWORD and os.getenv('APP_PASSWORD_GOOGLE_PASSWORD'):
+                logging.info("Using email password from .env file. Consider storing it in Windows Credential Manager for better security.")
         
     @classmethod
     def setup_logging(cls, module_name):
@@ -121,6 +199,7 @@ class Config:
                 logging.StreamHandler()
             ]
         )
+    
     @classmethod
     def validate_env_config(cls):
         """
@@ -137,16 +216,14 @@ class Config:
             raise ValueError("Missing SFTP_HOST or SFTP_PORT in .env file")
         
         if not all([cls.USERNAME, cls.PASSWORD]):
-            raise ValueError("Missing DATA_USERNAME or DATA_PASSWORD in .env file")
+            raise ValueError("Missing credentials - not found in Windows Credential Manager or .env file")
         
         # email configuration
         if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
-            logging.warning("Missing email configuration in .env file. Email notifications will be disabled.")
-            
-            raise ValueError("Missing email configuration in .env file")
+            logging.warning("Missing email configuration. Email notifications will be disabled.")
         
     @classmethod
-    def create_directories(cls,file_type):
+    def create_directories(cls, file_type):
         """
         Create necessary directories for the application
         
@@ -165,7 +242,6 @@ class Config:
         if cls.CLEAN_DATA_DIR and file_type == "data_cleaner":
             os.makedirs(cls.CLEAN_DATA_DIR, exist_ok=True)
             logging.info(f"Clean data directory created at {cls.CLEAN_DATA_DIR}")
-    
     
     @classmethod
     def send_error_email(cls, module_name, subject, error_message, traceback_info=None):

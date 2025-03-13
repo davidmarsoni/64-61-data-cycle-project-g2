@@ -12,7 +12,7 @@ from config import ensure_installed, Config
 # Ensure all required packages are installed before attempting to import them
 ensure_installed('pysmb')
 ensure_installed('paramiko')
-ensure_installed('python-dotenv')
+ensure_installed('keyring')  # Added keyring to requirements
 ensure_installed('chardet')
 
 # Now that we've ensured the packages are installed, import them
