@@ -65,10 +65,14 @@ def connect_smb():
         if conn.connect(Config.SMB_HOST, 445) or conn.connect(Config.SMB_HOST, 139):
             logging.info("SMB Connection successful!")
             return conn
-        raise ConnectionError("Failed to establish SMB connection.")
+        raise ConnectionError("Failed to establish SMB connection. If this is an authentication issue, make sure to run secure/set_credentials.py to set up your credentials properly.")
     except Exception as e:
+        error_msg = str(e)
+        # Check for common authentication error indicators
+        if any(keyword in error_msg.lower() for keyword in ['authentication', 'login', 'credential', 'password', 'access denied']):
+            error_msg = f"{error_msg} - Please run secure/set_credentials.py to ensure credentials are properly configured."
         error_trace = traceback.format_exc()
-        log_error("SMB Connection", str(e), error_trace)
+        log_error("SMB Connection", error_msg, error_trace)
         raise
 
 def connect_sftp():
@@ -84,9 +88,18 @@ def connect_sftp():
         sftp = paramiko.SFTPClient.from_transport(transport)
         logging.info("SFTP Connection successful!")
         return sftp, transport
-    except Exception as e:
+    except paramiko.AuthenticationException:
+        error_msg = "Authentication failed for SFTP connection. Please run secure/set_credentials.py to ensure credentials are properly configured."
         error_trace = traceback.format_exc()
-        log_error("SFTP Connection", str(e), error_trace)
+        log_error("SFTP Connection", error_msg, error_trace)
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        # Check for common authentication error indicators
+        if any(keyword in error_msg.lower() for keyword in ['authentication', 'login', 'credential', 'password', 'access denied']):
+            error_msg = f"{error_msg} - Please run secure/set_credentials.py to ensure credentials are properly configured."
+        error_trace = traceback.format_exc()
+        log_error("SFTP Connection", error_msg, error_trace)
         raise
 
 def load_downloaded_files(record_file):

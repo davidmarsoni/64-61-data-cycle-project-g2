@@ -97,7 +97,7 @@ def set_credentials_from_env():
     os.makedirs(os.path.join(env_params["BASE_DIR"], "logs"), exist_ok=True)
     
     print("\n✅ Complete configuration finished!")
-    print("\nℹ️ Credentials have been read from your .env file and transferred to Credential Manager.")
+    print("\n Credentials have been read from your .env file and transferred to Credential Manager.")
     
     return 0
 
