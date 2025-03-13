@@ -1,5 +1,5 @@
 *.env
-
+*.env.backup
 __pycache__
 
 TODO.md
