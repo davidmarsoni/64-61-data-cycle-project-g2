@@ -3,38 +3,38 @@ import os
 import shutil
 from config import CredentialManager, ensure_installed
 
-# Assurez-vous que keyring et dotenv sont installés
+# Make sure keyring and dotenv are installed
 ensure_installed('keyring')
 ensure_installed('python-dotenv')
 from dotenv import load_dotenv, find_dotenv
 
 def set_credentials_from_env():
     """
-    Lit les identifiants depuis le fichier .env et les enregistre dans Windows Credential Manager.
-    Crée ensuite un nouveau fichier .env en supprimant les informations sensibles.
+    Reads credentials from the .env file and stores them in Windows Credential Manager.
+    Then creates a new .env file by removing sensitive information.
     """
-    # 0. Charger les variables d'environnement depuis .env
+    # 0. Load environment variables from .env
     load_dotenv()
     
-    # === LECTURE DES IDENTIFIANTS DEPUIS LE FICHIER .ENV ===
+    # === READ CREDENTIALS FROM .ENV FILE ===
     
-    # Identifiants de connexion pour SMB/SFTP
+    # Login credentials for SMB/SFTP
     username = os.getenv("DATA_USERNAME")
     password = os.getenv("DATA_PASSWORD")
     
-    # Identifiants email pour Gmail
+    # Email credentials for Gmail
     email_username = os.getenv("GOOGLE_EMAIL_SENDER")
     email_password = os.getenv("GOOGLE_EMAIL_PASSWORD")
     
-    # Vérifier que les identifiants nécessaires sont présents
+    # Verify that all required credentials are present
     if not all([username, password, email_username, email_password]):
-        print("❌ Les identifiants requis ne sont pas tous définis dans le fichier .env")
-        print("Assurez-vous que DATA_USERNAME, DATA_PASSWORD, GOOGLE_EMAIL_SENDER et GOOGLE_EMAIL_PASSWORD sont définis.")
+        print("❌ Required credentials are not all defined in the .env file")
+        print("Make sure DATA_USERNAME, DATA_PASSWORD, GOOGLE_EMAIL_SENDER and GOOGLE_EMAIL_PASSWORD are defined.")
         return 1
     
-    # === DÉFINISSEZ VOS PARAMÈTRES NON SENSIBLES POUR LE NOUVEAU FICHIER .ENV ===
+    # === DEFINE YOUR NON-SENSITIVE PARAMETERS FOR THE NEW .ENV FILE ===
     
-    # Ces paramètres seront écrits dans votre nouveau fichier .env (sans les mots de passe)
+    # These parameters will be written to your new .env file (without passwords)
     env_params = {
         "SMB_HOST": os.getenv("SMB_HOST", "10.130.25.152"),
         "SFTP_HOST": os.getenv("SFTP_HOST", "10.130.25.152"),
@@ -42,62 +42,62 @@ def set_credentials_from_env():
         "BASE_DIR": os.getenv("BASE_DIR", "C:/DataCollection"),
         "GOOGLE_EMAIL_SENDER": email_username,
         "GOOGLE_EMAIL_DESTINATOR": os.getenv("GOOGLE_EMAIL_DESTINATOR", email_username),
-        "DATA_USERNAME": username  # Pour lier avec le credential manager
+        "DATA_USERNAME": username  # To link with credential manager
     }
     
-    # === FIN DE LA SECTION DE CONFIGURATION ===
+    # === END OF CONFIGURATION SECTION ===
     
-    # 1. Stocker les identifiants dans Windows Credential Manager
-    print("Configuration des identifiants dans Windows Credential Manager...")
+    # 1. Store credentials in Windows Credential Manager
+    print("Configuring credentials in Windows Credential Manager...")
     
-    # Enregistrement des identifiants de connexion
+    # Save login credentials
     success1 = CredentialManager.set_credential(username, password)
     if success1:
-        print(f"✅ Identifiants de connexion pour '{username}' enregistrés avec succès!")
+        print(f"✅ Login credentials for '{username}' successfully saved!")
     else:
-        print(f"❌ Échec de l'enregistrement des identifiants pour '{username}'")
+        print(f"❌ Failed to save credentials for '{username}'")
         return 1
     
-    # Enregistrement des identifiants email
+    # Save email credentials
     success2 = CredentialManager.set_credential(email_username, email_password)
     if success2:
-        print(f"✅ Identifiants email pour '{email_username}' enregistrés avec succès!")
+        print(f"✅ Email credentials for '{email_username}' successfully saved!")
     else:
-        print(f"❌ Échec de l'enregistrement des identifiants email pour '{email_username}'")
+        print(f"❌ Failed to save email credentials for '{email_username}'")
         return 1
     
-    # 2. Créer ou mettre à jour le fichier .env (en supprimant toute info sensible)
-    print("\nConfiguration du fichier .env (sans informations sensibles)...")
+    # 2. Create or update the .env file (removing all sensitive info)
+    print("\nConfiguring .env file (without sensitive information)...")
     
-    # Déterminer le chemin du fichier .env
+    # Determine the path to the .env file
     env_path = find_dotenv()
     if not env_path:
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     
-    # Créer une copie de sauvegarde du .env original (optionnel)
+    # Create a backup of the original .env (optional)
     if os.path.exists(env_path):
         backup_path = env_path + ".backup"
         shutil.copy2(env_path, backup_path)
-        print(f"✅ Une copie de sauvegarde de votre .env original a été créée: {backup_path}")
+        print(f"✅ A backup copy of your original .env has been created: {backup_path}")
     
-    # On crée un nouveau fichier .env sans les informations sensibles
+    # Create a new .env file without sensitive information
     with open(env_path, 'w', encoding='utf-8') as f:
-        f.write("# Configuration pour le collecteur de données\n")
-        f.write("# Informations sensibles stockées dans Windows Credential Manager\n\n")
+        f.write("# Configuration for the data collector\n")
+        f.write("# Sensitive information stored in Windows Credential Manager\n\n")
         
-        # Écrire les nouveaux paramètres
+        # Write the new parameters
         for key, value in env_params.items():
             f.write(f"{key}={value}\n")
     
-    print(f"✅ Fichier .env créé avec succès à : {env_path}")
-    print(f"✅ Les mots de passe ont été supprimés du fichier .env")
+    print(f"✅ .env file successfully created at: {env_path}")
+    print(f"✅ Passwords have been removed from the .env file")
     
-    # Créer les répertoires nécessaires
+    # Create necessary directories
     os.makedirs(env_params["BASE_DIR"], exist_ok=True)
     os.makedirs(os.path.join(env_params["BASE_DIR"], "logs"), exist_ok=True)
     
-    print("\n✅ Configuration complète terminée!")
-    print("\nℹ️ Les identifiants ont été lus depuis votre fichier .env et transférés au Credential Manager.")
+    print("\n✅ Complete configuration finished!")
+    print("\nℹ️ Credentials have been read from your .env file and transferred to Credential Manager.")
     
     return 0
 
