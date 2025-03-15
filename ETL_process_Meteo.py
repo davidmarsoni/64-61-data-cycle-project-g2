@@ -162,8 +162,6 @@ def process_meteo_files(session, meteo_folder):
                 
                 # Batch insertion
                 batch_size = 1000
-                records_to_insert = []
-                records_to_update = []
                 
                 # Process each row
                 for _, row in meteo_df.iterrows():

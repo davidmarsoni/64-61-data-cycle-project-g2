@@ -1,6 +1,10 @@
 import sys
 import os
 import shutil
+
+# Add parent directory to path so we can import from config.py
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import CredentialManager, ensure_installed
 
 # Make sure keyring and dotenv are installed
