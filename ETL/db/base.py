@@ -19,11 +19,16 @@ def get_session():
 def init_db():
     """Initialize database tables if they don't exist"""
     engine = get_engine()
-    # Import all models to ensure they're registered with Base
-    from ETL.db.models import DimDate, DimTime, DimSite, FactMeteoSwissData
     
     # Create tables if they don't exist
     Base.metadata.create_all(engine)
     print("Database tables created or verified.")
     
+    # check if all the tables are created
+    tables = Base.metadata.tables.keys()
+    if not tables:
+        print("No tables found in the database.")
+    else:
+        print(f"Tables found: {', '.join(tables)}")
+        
     return engine

@@ -5,8 +5,6 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import text
-from ETL.utils.utils import create_connection, get_connection_string
 from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
 from ETL.db.base import get_session, init_db
 from ETL.db.models import FactSolarProduction
@@ -15,7 +13,8 @@ from ETL.Dim.DimTime import get_or_create_time
 from ETL.Dim.DimInverter import get_or_create_inverter
 from ETL.Dim.DimStatus import get_or_create_status
 from config import ensure_installed, Config
-
+from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
+  
 # Ensure required packages are installed
 ensure_installed('pandas')
 ensure_installed('sqlalchemy')
@@ -95,16 +94,15 @@ def validate_solar_row(row, file_type="PV"):
                 missing_cols = [col for col in required_columns if col not in row.index]
                 return False, f"Missing required columns for min file: {missing_cols}"
                 
-            # Map min file columns to standard column names
-          
+            # Map min file columns to standard column names and handle missing values
             standard_row = {
                 'Date': row['Date'],
                 'Time': row['Time'],
                 'InverterName': str(row['INV']),
                 'StatusName': str(row['Status']),
-                'TotalEnergyProduced': row['DaySum'],
-                'EnergyProduced': round((row['Pac']*5/60)/1000, 3),
-                'ErrorCount': row['Error']
+                'TotalEnergyProduced': 0 if pd.isna(row['DaySum']) else row['DaySum'],
+                'EnergyProduced': 0 if pd.isna(row['Pac']) else round((row['Pac']*5/60)/1000, 3),
+                'ErrorCount': 0 if pd.isna(row['Error']) else row['Error']
             }
         else:  # PV file format
             # Check if all required columns exist for PV file format
@@ -113,14 +111,14 @@ def validate_solar_row(row, file_type="PV"):
                 missing_cols = [col for col in required_columns if col not in row.index]
                 return False, f"Missing required columns for PV file: {missing_cols}"
                 
-            # Map PV file columns to standard column names
+            # Map PV file columns to standard column names and handle missing values
             standard_row = {
                 'Date': row['Date'],
                 'Time': row['Time'],
-                'InverterName': 'PV_Inverter',  # Default inverter name for PV files
+                'InverterName': 'History', # Default inverter name for the PV file
                 'StatusName': '0',  # Default status for PV files
-                'TotalEnergyProduced': '0', ## Default total energy produced for PV files
-                'EnergyProduced': row['Value'],
+                'TotalEnergyProduced': 0,  # Default total energy produced for PV files
+                'EnergyProduced': 0 if pd.isna(row['Value']) else row['Value'],
                 'ErrorCount': 0  # Default error count for PV files
             }
         
@@ -138,16 +136,42 @@ def validate_solar_row(row, file_type="PV"):
         # Validate measurements (convert to numeric if possible)
         try:
             # Convert string values to appropriate numeric types
-            standard_row['TotalEnergyProduced'] = float(standard_row['TotalEnergyProduced'])
-            standard_row['EnergyProduced'] = float(standard_row['EnergyProduced'])
-            standard_row['ErrorCount'] = int(standard_row['ErrorCount'])
-        except (ValueError, TypeError) as e:
+            # If conversion fails, set to default value of 0
+            try:
+                standard_row['TotalEnergyProduced'] = float(standard_row['TotalEnergyProduced'])
+            except (ValueError, TypeError):
+                standard_row['TotalEnergyProduced'] = 0.0
+                
+            try:
+                standard_row['EnergyProduced'] = float(standard_row['EnergyProduced'])
+            except (ValueError, TypeError):
+                standard_row['EnergyProduced'] = 0.0
+                
+            try:
+                standard_row['ErrorCount'] = int(standard_row['ErrorCount'])
+            except (ValueError, TypeError):
+                standard_row['ErrorCount'] = 0
+        except Exception as e:
             return False, f"Invalid measurement values, couldn't convert to numeric: {str(e)}"
         
-        # Check for null values in key fields
-        for key in ['InverterName', 'StatusName', 'TotalEnergyProduced', 'EnergyProduced']:
-            if key not in standard_row or pd.isna(standard_row[key]):
-                return False, f"Missing or invalid value for {key}"
+        # Check for null values in key fields and set defaults
+        if pd.isna(standard_row.get('InverterName')) or standard_row.get('InverterName') is None:
+            if file_type.lower() == "pv":
+                standard_row['InverterName'] = 'PV_Inverter'
+            else:
+                standard_row['InverterName'] = 'Unknown_Inverter'
+            
+        if pd.isna(standard_row.get('StatusName')) or standard_row.get('StatusName') is None:
+            standard_row['StatusName'] = '0'
+            
+        if pd.isna(standard_row.get('TotalEnergyProduced')) or standard_row.get('TotalEnergyProduced') is None:
+            standard_row['TotalEnergyProduced'] = 0.0
+            
+        if pd.isna(standard_row.get('EnergyProduced')) or standard_row.get('EnergyProduced') is None:
+            standard_row['EnergyProduced'] = 0.0
+            
+        if pd.isna(standard_row.get('ErrorCount')) or standard_row.get('ErrorCount') is None:
+            standard_row['ErrorCount'] = 0
         
         # Update the row with standardized values (to be used for DB insertion)
         for key, value in standard_row.items():
@@ -191,7 +215,7 @@ def process_solar_files(session, solarlogs_folder):
         # Preload all dimension data to reduce database queries
         logging.info("Preloading dimension data...")
         
-        from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
+      
         
         # Fetch all dates from dimension table
         all_dates = {}
@@ -488,8 +512,6 @@ def populate_dim_tables_and_facts():
         # Preload dimension data for efficiency
         logging.info("Preloading dimension data...")
         
-        from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
-        
         # Fetch all dates from dimension table
         all_dates = {}
         for date in session.query(DimDate).all():
@@ -580,9 +602,6 @@ def process_files_from_category(session, folder_path, files, category):
     """Process files from a specific category using the appropriate processor"""
     try:
         logging.info(f"Processing {category} files...")
-        
-        # Preload dimension data for efficiency
-        from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
         
         # Fetch all dates from dimension table
         all_dates = {}
