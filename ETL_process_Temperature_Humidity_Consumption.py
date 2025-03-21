@@ -5,14 +5,13 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import text
-from ETL.utils.utils import create_connection, get_connection_string
 from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
 from ETL.db.base import get_session, init_db
 from ETL.db.models import FactEnergyConsumption
 from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
 from config import ensure_installed, Config
+from ETL.db.models import DimDate, DimTime
 
 # Ensure required packages are installed
 ensure_installed('pandas')
@@ -78,7 +77,6 @@ def validate_energy_row(consumption_val, temperature_val, humidity_val):
         if any(val is None or pd.isna(val) for val in [consumption_val, temperature_val, humidity_val]):
             return False, "Missing required values"
         
-        # Additional validation can be added here
         return True, "Valid"
     except Exception as e:
         return False, f"Validation error: {str(e)}"
@@ -86,7 +84,6 @@ def validate_energy_row(consumption_val, temperature_val, humidity_val):
 def process_energy_files(session, consumption_df, temp_df, humidity_df):
     """Process energy consumption files and insert into database using ORM"""
     try:
-        from ETL.db.models import DimDate, DimTime
         stats = {'processed': 0, 'inserted': 0, 'duplicates': 0, 'invalid': 0}
         
         # Preload all dimension data to reduce database queries

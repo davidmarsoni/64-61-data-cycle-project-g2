@@ -5,8 +5,6 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import text
-from ETL.utils.utils import create_connection, get_connection_string
 from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
 from ETL.db.base import get_session, init_db
 from ETL.db.models import FactMeteoSwissData
@@ -14,6 +12,7 @@ from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
 from ETL.Dim.DimSite import get_or_create_site
 from config import ensure_installed, Config
+from ETL.db.models import DimDate, DimTime, DimSite
 
 # Ensure required packages are installed
 ensure_installed('pandas')
@@ -55,7 +54,7 @@ def get_files_by_category():
             if "Pred" not in files_by_category["Meteo"]:
                 files_by_category["Meteo"]["Pred"] = []
             files_by_category["Meteo"]["Pred"].append(os.path.join(meteo_folder_path, f))
-            logging.info(f"Found prediction file: {f}")
+            logging.info(f"Found meteo prediction file: {f}")
     
     return files_by_category
 
@@ -107,8 +106,6 @@ def process_meteo_files(session, meteo_folder):
         # Preload all dimension data to reduce database queries
         # We need to join with the actual dimension tables to get the needed attributes
         logging.info("Preloading dimension data...")
-        
-        from ETL.db.models import DimDate, DimTime, DimSite
         
         # Fetch all dates from dimension table - fix attribute names to match schema
         all_dates = {}
@@ -162,8 +159,6 @@ def process_meteo_files(session, meteo_folder):
                 
                 # Batch insertion
                 batch_size = 1000
-                records_to_insert = []
-                records_to_update = []
                 
                 # Process each row
                 for _, row in meteo_df.iterrows():
@@ -268,7 +263,7 @@ def process_meteo_files(session, meteo_folder):
                             log_error("Batch Commit", f"Error during batch commit: {batch_error}", error_trace)
                             session.rollback()
                 
-                # Commit any remaining changes
+                # Commit any remaining changes if there are not enough for a full batch
                 try:
                     session.commit()
                     logging.info(f"Committed final batch")

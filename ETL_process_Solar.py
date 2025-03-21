@@ -1,557 +1,653 @@
-"""
-ETL script to populate the FactSolarProduction table and related dimensions
-using SQLAlchemy ORM.
-"""
-
+# Required library imports
 import os
-import re
 import pandas as pd
-import numpy as np
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, inspect
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy.sql import exists
-from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime
-from dotenv import load_dotenv
 import logging
+import traceback
+from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
+from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
+from ETL.db.base import get_session, init_db
+from ETL.db.models import FactSolarProduction
+from ETL.Dim.DimDate import get_or_create_date
+from ETL.Dim.DimTime import get_or_create_time
+from ETL.Dim.DimInverter import get_or_create_inverter
+from ETL.Dim.DimStatus import get_or_create_status
+from config import ensure_installed, Config
+from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
+  
+# Ensure required packages are installed
+ensure_installed('pandas')
+ensure_installed('sqlalchemy')
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("solar_production_etl.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+SUBFOLDERS = {
+    "Solarlogs": ["PV", "min"],
+}
 
-# Load environment variables
-load_dotenv()
-
-# Global configuration
-BASE_DIR = os.getenv('BASE_DIR', 'C:\\DataCollection')  # Valeur par défaut si non définie
-current_date = datetime.now().strftime('%Y-%m-%d')
-CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}")
-
-# Database connection
-SERVER = os.getenv('DB_SERVER', '.')
-DATABASE = os.getenv('DB_NAME', 'data_cycle_db')
-CONNECTION_STRING = f'mssql+pyodbc://{SERVER}/{DATABASE}?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes'
-
-# SQLAlchemy setup
-Base = declarative_base()
-
-# Define ORM models matching the database schema
-class DimDate(Base):
-    __tablename__ = 'DimDate'
+def get_files_by_category():
+    """Get all CSV files organized by category"""
+    files_by_category = {}
     
-    id_date = Column(Integer, primary_key=True, autoincrement=True)
-    year = Column(Integer, nullable=False)
-    month = Column(Integer, nullable=False)
-    day = Column(Integer, nullable=False)
-
-class DimTime(Base):
-    __tablename__ = 'DimTime'
-    
-    id_time = Column(Integer, primary_key=True, autoincrement=True)
-    hour = Column(Integer, nullable=False)
-    minute = Column(Integer, nullable=False)
-
-class DimInverter(Base):
-    __tablename__ = 'DimInverter'
-    
-    id_inverter = Column(Integer, primary_key=True, autoincrement=True)
-    inverterName = Column(String(255), nullable=False)
-
-class DimStatus(Base):
-    __tablename__ = 'DimStatus'
-    
-    id_status = Column(Integer, primary_key=True, autoincrement=True)
-    statusName = Column(String(255), nullable=False)
-
-class FactSolarProduction(Base):
-    __tablename__ = 'FactSolarProduction'
-    
-    id_FactSolarProduction = Column(Integer, primary_key=True, autoincrement=True)
-    id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
-    id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    id_status = Column(Integer, ForeignKey('DimStatus.id_status'), nullable=True)
-    id_inverter = Column(Integer, ForeignKey('DimInverter.id_inverter'), nullable=False)
-    total_energy_produced = Column(Float, nullable=False)
-    energy_produced = Column(Float, nullable=False)
-    error_count = Column(Integer, default=0)
-
-
-class SolarProductionETL:
-    """ETL process for solar production data"""
-    
-    def __init__(self):
-        """Initialize the ETL process"""
-        self.engine = create_engine(CONNECTION_STRING)
+    if not Config.CLEAN_DATA_DIR or not os.path.exists(Config.CLEAN_DATA_DIR):
+        log_error("File Search", f"Directory does not exist: {Config.CLEAN_DATA_DIR}")
+        return files_by_category
         
-        # Check if tables exist and create them if they don't
-        self.create_tables_if_not_exist()
+    data_folders = [f for f in os.listdir(Config.BASE_DIR) if f.startswith('cleaned_data_')]
+    if not data_folders:
+        log_error("File Search", "No cleaned_data folders found")
+        return files_by_category
         
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
-        
-        # Caches for dimension lookups
-        self.date_cache = {}
-        self.time_cache = {}
-        self.inverter_cache = {}
-        self.status_cache = {}
-        
-        # Load status descriptions
-        self.status_descriptions = {
-            0: "Standby",
-            6: "Running", 
-            14: "Error"
-        }
-        
-        # Pre-load dimension caches
-        self._preload_dimensions()
+    latest_data_folder = sorted(data_folders)[-1]
+    actual_data_dir = os.path.join(Config.BASE_DIR, latest_data_folder)
     
-    def create_tables_if_not_exist(self):
-        """Check if required tables exist and create them if they don't"""
-        inspector = inspect(self.engine)
-        tables = inspector.get_table_names()
+    logging.info(f"Using data folder: {actual_data_dir}")
+    
+    # Process Solarlogs folder
+    solarlogs_folder_path = os.path.join(actual_data_dir, "Solarlogs")
+    if not os.path.exists(solarlogs_folder_path):
+        log_error("File Search", f"Solarlogs folder path does not exist: {solarlogs_folder_path}")
+        return files_by_category
         
-        # Create all tables defined in Base if they don't exist
-        if not all(table in tables for table in ['DimDate', 'DimTime', 'DimInverter', 'DimStatus', 'FactSolarProduction']):
-            logger.info("Creating database tables that don't exist...")
-            Base.metadata.create_all(self.engine)
-            logger.info("Tables created successfully")
+    files_by_category["Solarlogs"] = {}
+    
+    # Initialize the categories
+    for category in SUBFOLDERS["Solarlogs"]:
+        files_by_category["Solarlogs"][category] = []
+    
+    # Look for files with category identifiers in their names in the Solarlogs folder
+    for f in os.listdir(solarlogs_folder_path):
+        if f.endswith('.csv'):
+            file_path = os.path.join(solarlogs_folder_path, f)
+            for category in SUBFOLDERS["Solarlogs"]:
+                if category.lower() in f.lower():
+                    files_by_category["Solarlogs"][category].append(file_path)
+                    logging.info(f"Found {category} file: {f}")
+    
+    # Log summary of files found
+    for category in SUBFOLDERS["Solarlogs"]:
+        count = len(files_by_category["Solarlogs"][category])
+        if count > 0:
+            logging.info(f"Found {count} {category} files in Solarlogs folder")
         else:
-            logger.info("All required tables already exist")
-            
-            # Check if columns match our model
-            for table_name in ['FactSolarProduction', 'DimDate', 'DimTime', 'DimInverter', 'DimStatus']:
-                if table_name in tables:
-                    columns = [col['name'] for col in inspector.get_columns(table_name)]
-                    logger.info(f"Table {table_name} columns: {', '.join(columns)}")
-                    
-                    # Verify key columns for FactSolarProduction
-                    if table_name == 'FactSolarProduction':
-                        expected_columns = ['id_FactSolarProduction', 'id_date', 'id_time', 'id_inverter', 'id_status', 'total_energy_produced', 'energy_produced', 'error_count']
-                        missing = [col for col in expected_columns if col not in columns]
-                        if missing:
-                            logger.warning(f"Missing columns in {table_name}: {', '.join(missing)}")
-                            raise ValueError(f"Database schema mismatch. Missing columns in {table_name}: {', '.join(missing)}")
+            logging.warning(f"No {category} files found in Solarlogs folder")
+    
+    return files_by_category
 
-    def _preload_dimensions(self):
-        """Pre-load dimension tables to minimize database queries"""
-        logger.info("Pre-loading dimension data...")
-        
-        # Load dates
-        for date_row in self.session.query(DimDate).all():
-            date_key = f"{date_row.year}-{date_row.month:02d}-{date_row.day:02d}"
-            self.date_cache[date_key] = date_row.id_date
-            
-        # Load times
-        for time_row in self.session.query(DimTime).all():
-            time_key = f"{time_row.hour:02d}:{time_row.minute:02d}:00"
-            self.time_cache[time_key] = time_row.id_time
-            
-        # Load inverters
-        for inverter_row in self.session.query(DimInverter).all():
-            self.inverter_cache[inverter_row.inverterName] = inverter_row.id_inverter
-            
-        # Load statuses
-        for status_row in self.session.query(DimStatus).all():
-            for status_code, status_name in self.status_descriptions.items():
-                if status_row.statusName == status_name:
-                    self.status_cache[status_code] = status_row.id_status
-        
-        logger.info(f"Loaded {len(self.date_cache)} dates, {len(self.time_cache)} times, "
-                   f"{len(self.inverter_cache)} inverters, and {len(self.status_cache)} statuses")
+def get_value_for_date_time(df, date_str, time_str, column_name):
+    """Get value from dataframe for specific date and time"""
+    if df is None:
+        return None
+    
+    matches = df[(df['Date'] == date_str) & (df['Time'] == time_str)]
+    return matches[column_name].iloc[0] if not matches.empty and column_name in matches.columns else None
 
-    def get_or_create_date_id(self, date_str):
-        """Get or create date dimension entry"""
-        if date_str in self.date_cache:
-            return self.date_cache[date_str]
-            
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+def validate_solar_row(row, file_type="PV"):
+    """Validate a single row of solar production data based on file type"""
+    try:
+        # Create a standardized row with all required fields
+        standard_row = {}
         
-        # Check if date exists in database
-        date_entry = self.session.query(DimDate).filter_by(
-            year=date_obj.year, 
-            month=date_obj.month, 
-            day=date_obj.day
-        ).first()
+        # Handle different file formats by mapping columns appropriately
+        if file_type.lower() == "min":
+            # Check if all required columns exist for min file format
+            required_columns = ['Date', 'Time', 'INV', 'Pac', 'DaySum', 'Status', 'Error']
+            if not all(col in row.index for col in required_columns):
+                missing_cols = [col for col in required_columns if col not in row.index]
+                return False, f"Missing required columns for min file: {missing_cols}"
+                
+            # Map min file columns to standard column names and handle missing values
+            standard_row = {
+                'Date': row['Date'],
+                'Time': row['Time'],
+                'InverterName': str(row['INV']),
+                'StatusName': str(row['Status']),
+                'TotalEnergyProduced': 0 if pd.isna(row['DaySum']) else row['DaySum'],
+                'EnergyProduced': 0 if pd.isna(row['Pac']) else round((row['Pac']*5/60)/1000, 3),
+                'ErrorCount': 0 if pd.isna(row['Error']) else row['Error']
+            }
+        else:  # PV file format
+            # Check if all required columns exist for PV file format
+            required_columns = ['Date', 'Time', 'Value']
+            if not all(col in row.index for col in required_columns):
+                missing_cols = [col for col in required_columns if col not in row.index]
+                return False, f"Missing required columns for PV file: {missing_cols}"
+                
+            # Map PV file columns to standard column names and handle missing values
+            standard_row = {
+                'Date': row['Date'],
+                'Time': row['Time'],
+                'InverterName': 'History', # Default inverter name for the PV file
+                'StatusName': '0',  # Default status for PV files
+                'TotalEnergyProduced': 0,  # Default total energy produced for PV files
+                'EnergyProduced': 0 if pd.isna(row['Value']) else row['Value'],
+                'ErrorCount': 0  # Default error count for PV files
+            }
         
-        if date_entry:
-            self.date_cache[date_str] = date_entry.id_date
-            return date_entry.id_date
-            
-        # Create new date
-        new_date = DimDate(
-            year=date_obj.year,
-            month=date_obj.month,
-            day=date_obj.day
-        )
-        self.session.add(new_date)
-        self.session.flush()  # Get the generated ID
+        # Validate date format (should be a string that can be parsed)
+        if isinstance(standard_row['Date'], str) and '.' in standard_row['Date']:
+            # Handle European date format DD.MM.YY
+            try:
+                day, month, year = standard_row['Date'].split('.')
+                if len(year) == 2:
+                    year = f"20{year}"  # Assuming 20xx for two-digit years
+                standard_row['Date'] = f"{year}-{month}-{day}"
+            except Exception as e:
+                return False, f"Invalid date format: {standard_row['Date']} - {str(e)}"
         
-        self.date_cache[date_str] = new_date.id_date
-        return new_date.id_date
-        
-    def get_or_create_time_id(self, time_str):
-        """Get or create time dimension entry"""
-        if time_str in self.time_cache:
-            return self.time_cache[time_str]
-            
-        time_obj = datetime.strptime(time_str, '%H:%M:%S')
-        
-        # Check if time exists
-        time_entry = self.session.query(DimTime).filter_by(
-            hour=time_obj.hour,
-            minute=time_obj.minute
-        ).first()
-        
-        if time_entry:
-            self.time_cache[time_str] = time_entry.id_time
-            return time_entry.id_time
-            
-        # Create new time
-        new_time = DimTime(
-            hour=time_obj.hour,
-            minute=time_obj.minute
-        )
-        self.session.add(new_time)
-        self.session.flush()
-        
-        self.time_cache[time_str] = new_time.id_time
-        return new_time.id_time
-        
-    def get_or_create_inverter_id(self, inverter_id):
-        """Get or create inverter dimension entry"""
-        inverter_name = f"INV-{inverter_id}"
-        
-        if inverter_name in self.inverter_cache:
-            return self.inverter_cache[inverter_name]
-            
-        # Check if inverter exists
-        inverter_entry = self.session.query(DimInverter).filter_by(
-            inverterName=inverter_name
-        ).first()
-        
-        if inverter_entry:
-            self.inverter_cache[inverter_name] = inverter_entry.id_inverter
-            return inverter_entry.id_inverter
-            
-        # Create new inverter
-        new_inverter = DimInverter(
-            inverterName=inverter_name
-        )
-        self.session.add(new_inverter)
-        self.session.flush()
-        
-        self.inverter_cache[inverter_name] = new_inverter.id_inverter
-        return new_inverter.id_inverter
-        
-    def get_or_create_status_id(self, status_code):
-        """Get or create status dimension entry"""
-        if status_code in self.status_cache:
-            return self.status_cache[status_code]
-            
-        status_name = self.status_descriptions.get(status_code, f"Unknown-{status_code}")
-        
-        # Check if status exists
-        status_entry = self.session.query(DimStatus).filter_by(
-            statusName=status_name
-        ).first()
-        
-        if status_entry:
-            self.status_cache[status_code] = status_entry.id_status
-            return status_entry.id_status
-            
-        # Create new status
-        new_status = DimStatus(
-            statusName=status_name
-        )
-        self.session.add(new_status)
-        self.session.flush()
-        
-        self.status_cache[status_code] = new_status.id_status
-        return new_status.id_status
-        
-    def record_exists(self, date_id, time_id, inverter_id):
-        """Check if a record already exists to avoid duplicates"""
-        # Utiliser count() pour SQL Server au lieu de exists()
-        return self.session.query(FactSolarProduction).filter(
-            FactSolarProduction.id_date == date_id,
-            FactSolarProduction.id_time == time_id,
-            FactSolarProduction.id_inverter == inverter_id 
-        ).count() > 0
-        
-    def process_solar_panels_data(self):
-        """Process data from the SOLAR PANELS files"""
+        # Validate measurements (convert to numeric if possible)
         try:
-            # Path to Solarlogs folder
-            solar_logs_dir = os.path.join(CLEAN_DATA_DIR, "Solarlogs")
-            if not os.path.exists(solar_logs_dir):
-                logger.warning(f"Solarlogs directory not found: {solar_logs_dir}")
-                return
+            # Convert string values to appropriate numeric types
+            # If conversion fails, set to default value of 0
+            try:
+                standard_row['TotalEnergyProduced'] = float(standard_row['TotalEnergyProduced'])
+            except (ValueError, TypeError):
+                standard_row['TotalEnergyProduced'] = 0.0
                 
-            # Find all solar panel files (min*.csv pattern)
-            solar_files = []
-            for root, _, files in os.walk(solar_logs_dir):
-                for file in files:
-                    if file.startswith("min") and file.endswith('.csv'):
-                        solar_files.append(os.path.join(root, file))
-            
-            if not solar_files:
-                logger.warning("No SOLAR PANELS files found!")
-                return
+            try:
+                standard_row['EnergyProduced'] = float(standard_row['EnergyProduced'])
+            except (ValueError, TypeError):
+                standard_row['EnergyProduced'] = 0.0
                 
-            batch_count = 0
-            total_records = 0
-            batch_size = 500  # Commit every 500 records
-            
-            for file_path in solar_files:
-                logger.info(f"Processing {file_path}")
-                
-                try:
-                    df = pd.read_csv(file_path)
-                    
-                    # Check for required columns
-                    required_columns = ['Date', 'Time', 'INV', 'Pac']
-                    if not all(col in df.columns for col in required_columns):
-                        missing = [col for col in required_columns if col not in df.columns]
-                        logger.warning(f"Missing required columns in {file_path}: {', '.join(missing)}")
-                        continue
-                    
-                    # Handle 'DaySum' column if missing
-                    if 'DaySum' not in df.columns:
-                        logger.info(f"'DaySum' column not found in {file_path}, using Pac as total_energy_produced")
-                        df['DaySum'] = df['Pac']
-                    
-                    # Standardize date and time formats with explicit format to avoid warnings
-                    try:
-                        # Handle different possible date formats
-                        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-                        
-                        # Try with different time formats to handle various input formats
-                        time_formats = ['%H:%M:%S', '%H:%M', '%I:%M:%S %p', '%I:%M %p']
-                        for time_format in time_formats:
-                            try:
-                                df['Time'] = pd.to_datetime(df['Time'], format=time_format, errors='coerce').dt.strftime('%H:%M:%S')
-                                # If successful (no NaT values), break out of the loop
-                                if not df['Time'].isna().any():
-                                    break
-                            except ValueError:
-                                continue
-                        
-                        # If still has NaT values, try the flexible parser as last resort
-                        if df['Time'].isna().any():
-                            df['Time'] = pd.to_datetime(df['Time'], errors='coerce').dt.strftime('%H:%M:%S')
-                            
-                        # Drop rows where date or time couldn't be parsed
-                        df = df.dropna(subset=['Date', 'Time'])
-                    except Exception as e:
-                        logger.warning(f"Error parsing dates/times in {file_path}: {str(e)}")
-                    
-                    # Process each row
-                    for _, row in df.iterrows():
-                        # Skip rows with missing critical data
-                        if pd.isna(row['Date']) or pd.isna(row['Time']) or pd.isna(row['INV']) or pd.isna(row['Pac']):
-                            continue
-                            
-                        date_id = self.get_or_create_date_id(row['Date'])
-                        time_id = self.get_or_create_time_id(row['Time'])
-                        inverter_id = self.get_or_create_inverter_id(row['INV'])
-                        
-                        # Skip if record already exists
-                        if self.record_exists(date_id, time_id, inverter_id):
-                            continue
-                            
-                        # Get status ID (if available)
-                        status_id = None
-                        if pd.notna(row.get('Status')):
-                            status_id = self.get_or_create_status_id(int(row['Status']))
-                            
-                        # Create new fact record
-                        new_fact = FactSolarProduction(
-                            id_date=date_id,
-                            id_time=time_id,
-                            id_inverter=inverter_id,
-                            total_energy_produced=float(row['DaySum']),
-                            energy_produced=float(row['Pac']),
-                            id_status=status_id,
-                            error_count=int(row.get('Error', 0)) if pd.notna(row.get('Error')) else 0
-                        )
-                        self.session.add(new_fact)
-                        
-                        batch_count += 1
-                        total_records += 1
-                        
-                        # Commit in batches
-                        if batch_count >= batch_size:
-                            self.session.commit()
-                            logger.info(f"Committed batch of {batch_count} records, total: {total_records}")
-                            batch_count = 0
-                            
-                except Exception as e:
-                    logger.error(f"Error processing file {file_path}: {str(e)}")
-                    self.session.rollback()
-                    continue
-                    
-            # Commit any remaining records
-            if batch_count > 0:
-                self.session.commit()
-                logger.info(f"Committed final batch of {batch_count} records, total: {total_records}")
-                
-            logger.info(f"Completed processing SOLAR PANELS data. Total records: {total_records}")
-            
+            try:
+                standard_row['ErrorCount'] = int(standard_row['ErrorCount'])
+            except (ValueError, TypeError):
+                standard_row['ErrorCount'] = 0
         except Exception as e:
-            logger.error(f"Error in process_solar_panels_data: {str(e)}")
-            self.session.rollback()
-            raise
+            return False, f"Invalid measurement values, couldn't convert to numeric: {str(e)}"
+        
+        # Check for null values in key fields and set defaults
+        if pd.isna(standard_row.get('InverterName')) or standard_row.get('InverterName') is None:
+            if file_type.lower() == "pv":
+                standard_row['InverterName'] = 'PV_Inverter'
+            else:
+                standard_row['InverterName'] = 'Unknown_Inverter'
             
-    def process_solar_history_data(self):
-        """Process data from the SOLARPANELS HISTORY files"""
+        if pd.isna(standard_row.get('StatusName')) or standard_row.get('StatusName') is None:
+            standard_row['StatusName'] = '0'
+            
+        if pd.isna(standard_row.get('TotalEnergyProduced')) or standard_row.get('TotalEnergyProduced') is None:
+            standard_row['TotalEnergyProduced'] = 0.0
+            
+        if pd.isna(standard_row.get('EnergyProduced')) or standard_row.get('EnergyProduced') is None:
+            standard_row['EnergyProduced'] = 0.0
+            
+        if pd.isna(standard_row.get('ErrorCount')) or standard_row.get('ErrorCount') is None:
+            standard_row['ErrorCount'] = 0
+        
+        # Update the row with standardized values (to be used for DB insertion)
+        for key, value in standard_row.items():
+            row[key] = value
+            
+        return True, "Valid"
+        
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
+
+def process_solar_files(session, solarlogs_folder):
+    """Process solar production data files and insert into database using ORM"""
+    try:
+        # Get all PV files from the PV subfolder
+        pv_folder = os.path.join(solarlogs_folder, "PV")
+        pv_files = []
+        
+        if os.path.exists(pv_folder):
+            pv_files = [f for f in os.listdir(pv_folder) if f.endswith('.csv')]
+            logging.info(f"Found {len(pv_files)} PV files to process")
+        else:
+            logging.warning(f"No PV subfolder found in {solarlogs_folder}. Will check for min files.")
+        
+        # Get all min files from the min subfolder
+        min_folder = os.path.join(solarlogs_folder, "min")
+        min_files = []
+        
+        if os.path.exists(min_folder):
+            min_files = [f for f in os.listdir(min_folder) if f.endswith('.csv')]
+            logging.info(f"Found {len(min_files)} min files to process")
+        else:
+            logging.warning(f"No min subfolder found in {solarlogs_folder}.")
+            
+        stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
+        
+        # If no files at all, log and return early with a message
+        if not pv_files and not min_files:
+            logging.info("No PV or min files to process. ETL completed successfully.")
+            return
+            
+        # Preload all dimension data to reduce database queries
+        logging.info("Preloading dimension data...")
+        
+      
+        
+        # Fetch all dates from dimension table
+        all_dates = {}
+        for date in session.query(DimDate).all():
+            date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+            all_dates[date_str] = date.id_date
+        logging.info(f"Preloaded {len(all_dates)} dates")
+        
+        # Fetch all times from dimension table
+        all_times = {}
+        for time in session.query(DimTime).all():
+            time_str = f"{time.hour:02d}:{time.minute:02d}:00"
+            all_times[time_str] = time.id_time
+        logging.info(f"Preloaded {len(all_times)} times")
+        
+        # Fetch all inverters from dimension table
+        all_inverters = {}
+        for inverter in session.query(DimInverter).all():
+            all_inverters[inverter.inverterName] = inverter.id_inverter
+        logging.info(f"Preloaded {len(all_inverters)} inverters")
+        
+        # Fetch all statuses from dimension table
+        all_statuses = {}
+        for status in session.query(DimStatus).all():
+            all_statuses[status.statusName] = status.id_status
+        logging.info(f"Preloaded {len(all_statuses)} statuses")
+        
+        # Create a dictionary for existing records to enable updates
+        logging.info("Preloading existing records for updating...")
+        existing_records = {}
+        for record in session.query(
+            FactSolarProduction
+        ).all():
+            record_key = (record.id_date, record.id_time, record.id_inverter, record.id_status)
+            existing_records[record_key] = record
+        
+        logging.info(f"Preloaded {len(existing_records)} existing records for checking")
+        
+        # Process PV files if available
+        if pv_files:
+            logging.info("Processing PV files...")
+            process_files_by_type(session, pv_folder, pv_files, "PV", all_dates, all_times, all_inverters, 
+                                 all_statuses, existing_records, stats)
+        
+        # Process min files if available
+        if min_files:
+            logging.info("Processing min files...")
+            process_files_by_type(session, min_folder, min_files, "min", all_dates, all_times, all_inverters, 
+                                 all_statuses, existing_records, stats)
+            
+        logging.info("=== Final Summary ===")
+        logging.info(f"Total Processed: {stats['processed']}")
+        logging.info(f"Total Inserted: {stats['inserted']}")
+        logging.info(f"Total Updated: {stats['updated']}")
+        logging.info(f"Total Unchanged: {stats['unchanged']}")
+        logging.info("===================")
+        
+    except SQLAlchemyError as e:
+        error_trace = traceback.format_exc()
+        log_error("Database", f"Database Error: {str(e)}", error_trace)
+        session.rollback()
+        raise
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Processing", f"Processing Error: {str(e)}", error_trace)
+        session.rollback()
+        raise
+
+def process_files_by_type(session, folder_path, files, file_type, all_dates, all_times, all_inverters, 
+                         all_statuses, existing_records, stats):
+    """Process solar production files of a specific type (PV or min)"""
+    file_stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
+    mappings = {
+        'date': {},
+        'time': {},
+        'inverter': {},
+        'status': {}
+    }
+    
+    # Batch insertion
+    batch_size = 1000
+    
+    for i, file_name in enumerate(files, 1):
+        logging.info(f"Processing {file_type} file: {file_name}")
+        file_path = os.path.join(folder_path, file_name)
         try:
-            # Path to Solarlogs folder
-            solar_logs_dir = os.path.join(CLEAN_DATA_DIR, "Solarlogs")
-            if not os.path.exists(solar_logs_dir):
-                logger.warning(f"Solarlogs directory not found: {solar_logs_dir}")
-                return
-                
-            # Find all solar panel history files (*.csv files with dates like DD.MM.YYYY-PV.csv)
-            history_files = []
-            for root, _, files in os.walk(solar_logs_dir):
-                for file in files:
-                    if "-PV.csv" in file and any(c == '.' for c in file[:10]):  # Match date pattern and -PV.csv
-                        history_files.append(os.path.join(root, file))
+            solar_df = pd.read_csv(file_path)
             
-            if not history_files:
-                logger.warning("No SOLARPANELS HISTORY files found!")
-                return
-                
-            batch_count = 0
-            total_records = 0
-            batch_size = 500  # Commit every 500 records
-            
-            for file_path in history_files:
-                logger.info(f"Processing history file {file_path}")
-                
+            # Standardize dates and times if they exist
+            if 'Date' in solar_df.columns and len(solar_df) > 0:
                 try:
-                    df = pd.read_csv(file_path)
-                    
-                    # Check for required columns
-                    required_columns = ['Date', 'Heure', 'INV', 'Variation']
-                    if not all(col in df.columns for col in required_columns):
-                        missing = [col for col in required_columns if col not in df.columns]
-                        logger.warning(f"Missing required columns in {file_path}: {', '.join(missing)}")
-                        continue
-                    
-                    # Standardize date and time formats with explicit format to avoid warnings
-                    try:
-                        # Handle different possible date formats
-                        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-                        
-                        # For 'Heure' column (time column in French)
-                        time_formats = ['%H:%M:%S', '%H:%M', '%I:%M:%S %p', '%I:%M %p']
-                        for time_format in time_formats:
-                            try:
-                                df['Time'] = pd.to_datetime(df['Heure'], format=time_format, errors='coerce').dt.strftime('%H:%M:%S')
-                                # If successful (no NaT values), break out of the loop
-                                if not df['Time'].isna().any():
-                                    break
-                            except ValueError:
-                                continue
-                        
-                        # If still has NaT values, try the flexible parser as last resort
-                        if 'Time' not in df.columns or df['Time'].isna().any():
-                            df['Time'] = pd.to_datetime(df['Heure'], errors='coerce').dt.strftime('%H:%M:%S')
-                            
-                        # Drop rows where date or time couldn't be parsed
-                        df = df.dropna(subset=['Date', 'Time'])
-                    except Exception as e:
-                        logger.warning(f"Error parsing dates/times in {file_path}: {str(e)}")
-                    
-                    # Filter for power measurements
-                    if 'UnitDisplay' in df.columns:
-                        power_data = df[df['UnitDisplay'].str.contains('kW|watt|kWh', case=False, na=False)]
+                    # Try to detect the date format
+                    if any('.' in str(date) for date in solar_df['Date'] if isinstance(date, str)):
+                        # Handle DD.MM.YY format
+                        solar_df['Date'] = pd.to_datetime(
+                            solar_df['Date'], 
+                            format='%d.%m.%y'
+                        ).dt.strftime('%Y-%m-%d')
                     else:
-                        power_data = df  # Use all data if no UnitDisplay column
+                        # Standard YYYY-MM-DD format
+                        solar_df['Date'] = pd.to_datetime(solar_df['Date']).dt.strftime('%Y-%m-%d')
+                except Exception as e:
+                    logging.warning(f"Error converting dates: {e}")
                     
-                    # Process each row
-                    for _, row in power_data.iterrows():
-                        # Skip rows with missing critical data
-                        if pd.isna(row['Date']) or pd.isna(row['Time']) or pd.isna(row['INV']) or pd.isna(row['Variation']):
-                            continue
-                            
-                        date_id = self.get_or_create_date_id(row['Date'])
-                        time_id = self.get_or_create_time_id(row['Time'])
-                        inverter_id = self.get_or_create_inverter_id(row['INV'])
+            if 'Time' in solar_df.columns and len(solar_df) > 0:
+                try:
+                    solar_df['Time'] = pd.to_datetime(
+                        solar_df['Time'], 
+                        format='%H:%M:%S' if ':' in str(solar_df['Time'].iloc[0]) else None
+                    ).dt.strftime('%H:%M:%S')
+                except Exception as e:
+                    logging.warning(f"Error converting times: {e}")
+            
+            # Process each row
+            for idx, row in solar_df.iterrows():
+                file_stats['processed'] += 1
+                
+                try:
+                    # Validate the row first - this will also standardize column names
+                    is_valid, message = validate_solar_row(row, file_type)
+                    if not is_valid:
+                        log_error("Data Validation", f"Invalid row in {file_name} (row {idx}): {message}")
+                        continue
+                    
+                    # Get dimension IDs
+                    date_str = row['Date']
+                    if date_str not in mappings['date']:
+                        if date_str in all_dates:
+                            mappings['date'][date_str] = all_dates[date_str]
+                        else:
+                            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                            date_id = get_or_create_date(session, date_obj)
+                            mappings['date'][date_str] = date_id
+                            all_dates[date_str] = date_id
+                    date_id = mappings['date'][date_str]
+                    
+                    time_str = row['Time']
+                    if time_str not in mappings['time']:
+                        if time_str in all_times:
+                            mappings['time'][time_str] = all_times[time_str]
+                        else:
+                            time_obj = datetime.strptime(time_str, '%H:%M:%S')
+                            time_id = get_or_create_time(session, time_obj)
+                            mappings['time'][time_str] = time_id
+                            all_times[time_str] = time_id
+                    time_id = mappings['time'][time_str]
+                    
+                    inverter_name = row['InverterName']
+                    if inverter_name not in mappings['inverter']:
+                        if inverter_name in all_inverters:
+                            mappings['inverter'][inverter_name] = all_inverters[inverter_name]
+                        else:
+                            inverter_id = get_or_create_inverter(session, inverter_name)
+                            mappings['inverter'][inverter_name] = inverter_id
+                            all_inverters[inverter_name] = inverter_id
+                    inverter_id = mappings['inverter'][inverter_name]
+                    
+                    status_name = row['StatusName']
+                    if status_name not in mappings['status']:
+                        if status_name in all_statuses:
+                            mappings['status'][status_name] = all_statuses[status_name]
+                        else:
+                            status_id = get_or_create_status(session, status_name)
+                            mappings['status'][status_name] = status_id
+                            all_statuses[status_name] = status_id
+                    status_id = mappings['status'][status_name]
+                    
+                    # New data values (already converted to correct types in the validation function)
+                    new_total_energy_produced = row['TotalEnergyProduced']
+                    new_energy_produced = row['EnergyProduced']
+                    new_error_count = row['ErrorCount']
+                    
+                    # Check if record exists and update it if values changed
+                    record_key = (date_id, time_id, inverter_id, status_id)
+                    
+                    if record_key in existing_records:
+                        # Get existing record
+                        existing_record = existing_records[record_key]
                         
-                        # Skip if record already exists (might have been added from SOLAR PANELS)
-                        if self.record_exists(date_id, time_id, inverter_id):
-                            continue
+                        # Check if any values have changed
+                        values_changed = (
+                            abs(existing_record.total_energy_produced - new_total_energy_produced) > 0.001 or
+                            abs(existing_record.energy_produced - new_energy_produced) > 0.001 or
+                            existing_record.error_count != new_error_count
+                        )
                         
-                        # Use Variation for both energy values since historical data might not have separate total
-                        variation_value = float(row['Variation'])
-                            
-                        # Create new fact record with power variation data
-                        new_fact = FactSolarProduction(
+                        if values_changed:
+                            # Update existing record with new values
+                            existing_record.total_energy_produced = new_total_energy_produced
+                            existing_record.energy_produced = new_energy_produced
+                            existing_record.error_count = new_error_count
+                            file_stats['updated'] += 1
+                        else:
+                            file_stats['unchanged'] += 1
+                    else:
+                        # Add new record
+                        new_record = FactSolarProduction(
                             id_date=date_id,
                             id_time=time_id,
                             id_inverter=inverter_id,
-                            energy_produced=variation_value,
-                            total_energy_produced=variation_value,  # Use same value for both since historical data
-                            id_status=None,
-                            error_count=0
+                            id_status=status_id,
+                            total_energy_produced=new_total_energy_produced,
+                            energy_produced=new_energy_produced,
+                            error_count=new_error_count
                         )
-                        self.session.add(new_fact)
+                        session.add(new_record)
+                        file_stats['inserted'] += 1
                         
-                        batch_count += 1
-                        total_records += 1
-                        
-                        # Commit in batches
-                        if batch_count >= batch_size:
-                            self.session.commit()
-                            logger.info(f"Committed batch of {batch_count} records, total: {total_records}")
-                            batch_count = 0
-                            
-                except Exception as e:
-                    logger.error(f"Error processing history file {file_path}: {str(e)}")
-                    self.session.rollback()
-                    continue
+                        # Add to existing records dictionary
+                        existing_records[record_key] = new_record
                     
-            # Commit any remaining records
-            if batch_count > 0:
-                self.session.commit()
-                logger.info(f"Committed final batch of {batch_count} records, total: {total_records}")
+                except Exception as row_error:
+                    error_trace = traceback.format_exc()
+                    log_error("Row Processing", f"Error processing row in file {file_name}: {row_error}", error_trace)
+                    continue
                 
-            logger.info(f"Completed processing SOLARPANELS HISTORY data. Total records: {total_records}")
+                # Commit every batch_size records
+                if (file_stats['processed'] % batch_size) == 0:
+                    try:
+                        session.commit()
+                        logging.info(f"Committed batch at {file_stats['processed']} records")
+                    except Exception as batch_error:
+                        error_trace = traceback.format_exc()
+                        log_error("Batch Commit", f"Error during batch commit: {batch_error}", error_trace)
+                        session.rollback()
             
-        except Exception as e:
-            logger.error(f"Error in process_solar_history_data: {str(e)}")
-            self.session.rollback()
-            raise
+            # Commit any remaining changes
+            try:
+                session.commit()
+                logging.info(f"Committed final batch for file {file_name}")
+            except Exception as batch_error:
+                error_trace = traceback.format_exc()
+                log_error("Final Batch Commit", f"Error during final batch commit: {batch_error}", error_trace)
+                session.rollback()
             
-    def run(self):
-        """Run the complete ETL process"""
-        try:
-            logger.info("Starting Solar Production ETL process")
+            # File complete message (without showing statistics)
+            logging.info(f"File complete: {file_name}")
+            logging.info(f"Rows processed: {file_stats['processed']}")
+            logging.info(f"Rows inserted: {file_stats['inserted']}")
+            logging.info(f"Rows updated: {file_stats['updated']}")
+            logging.info(f"Rows unchanged: {file_stats['unchanged']}")
             
-            # Process primary data source first
-            self.process_solar_panels_data()
-            
-            # Process secondary/historical data
-            self.process_solar_history_data()
-            
-            logger.info("Solar Production ETL process completed successfully")
-            
-        except Exception as e:
-            logger.error(f"ETL process failed: {str(e)}")
-            self.session.rollback()
-        finally:
-            self.session.close()
+        except Exception as file_error:
+            error_trace = traceback.format_exc()
+            log_error("File Processing", f"Error processing {file_type} file {file_name}: {file_error}", error_trace)
+            continue
+    
+    # Update total statistics
+    stats['processed'] += file_stats['processed']
+    stats['inserted'] += file_stats['inserted']
+    stats['updated'] += file_stats['updated']
+    stats['unchanged'] += file_stats['unchanged']
+    
+    # Only show the summary at the end of processing all files
+    logging.info(f"=== {file_type} Files Summary ===")
+    logging.info(f"Rows Processed: {file_stats['processed']}")
+    logging.info(f"Rows Inserted: {file_stats['inserted']}")
+    logging.info(f"Rows Updated: {file_stats['updated']}")
+    logging.info(f"Rows Unchanged: {file_stats['unchanged']}")
 
+def populate_dim_tables_and_facts():
+    """Main ETL process"""
+    # Setup logging for the ETL process
+    setup_logging("Solarlogs ETL")
+    logging.info("Starting Solarlogs ETL process")
+    
+    # First ensure tables exist
+    try:
+        init_db()
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Database Init", f"Error initializing database: {str(e)}", error_trace)
+        send_error_summary("Solarlogs ETL")
+        return
+        
+    session = get_session()
+    if not session:
+        log_error("Database Session", "Failed to create database session")
+        send_error_summary("Solarlogs ETL")
+        return
+    
+    try:
+        # Get files by category from the get_files_by_category function
+        files_by_category = get_files_by_category()
+        
+        if "Solarlogs" not in files_by_category or not files_by_category["Solarlogs"]:
+            log_error("File Search", "No Solarlogs files found in any category")
+            send_error_summary("Solarlogs ETL")
+            return
+        
+        # Process files for each category (PV and min) directly from files_by_category
+        solarlogs_files = files_by_category["Solarlogs"]
+        
+        # Preload dimension data for efficiency
+        logging.info("Preloading dimension data...")
+        
+        # Fetch all dates from dimension table
+        all_dates = {}
+        for date in session.query(DimDate).all():
+            date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+            all_dates[date_str] = date.id_date
+        logging.info(f"Preloaded {len(all_dates)} dates")
+        
+        # Fetch all times from dimension table
+        all_times = {}
+        for time in session.query(DimTime).all():
+            time_str = f"{time.hour:02d}:{time.minute:02d}:00"
+            all_times[time_str] = time.id_time
+        logging.info(f"Preloaded {len(all_times)} times")
+        
+        # Fetch all inverters from dimension table
+        all_inverters = {}
+        for inverter in session.query(DimInverter).all():
+            all_inverters[inverter.inverterName] = inverter.id_inverter
+        logging.info(f"Preloaded {len(all_inverters)} inverters")
+        
+        # Fetch all statuses from dimension table
+        all_statuses = {}
+        for status in session.query(DimStatus).all():
+            all_statuses[status.statusName] = status.id_status
+        logging.info(f"Preloaded {len(all_statuses)} statuses")
+        
+        # Create a dictionary for existing records to enable updates
+        logging.info("Preloading existing records for updating...")
+        existing_records = {}
+        for record in session.query(FactSolarProduction).all():
+            record_key = (record.id_date, record.id_time, record.id_inverter, record.id_status)
+            existing_records[record_key] = record
+        
+        logging.info(f"Preloaded {len(existing_records)} existing records for checking")
+        
+        # Process files with stats tracking
+        stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
+        
+        # Process PV files
+        if "PV" in solarlogs_files and solarlogs_files["PV"]:
+            pv_files = solarlogs_files["PV"]  # These are full paths
+            logging.info(f"Processing {len(pv_files)} PV files")
+            
+            for file_path in pv_files:
+                folder = os.path.dirname(file_path)
+                filename = os.path.basename(file_path)
+                process_files_by_type(session, folder, [filename], "PV", 
+                                     all_dates, all_times, all_inverters, 
+                                     all_statuses, existing_records, stats)
+        else:
+            logging.info("No PV files to process")
+            
+        # Process min files
+        if "min" in solarlogs_files and solarlogs_files["min"]:
+            min_files = solarlogs_files["min"]  # These are full paths
+            logging.info(f"Processing {len(min_files)} min files")
+            
+            for file_path in min_files:
+                folder = os.path.dirname(file_path)
+                filename = os.path.basename(file_path)
+                process_files_by_type(session, folder, [filename], "min", 
+                                     all_dates, all_times, all_inverters, 
+                                     all_statuses, existing_records, stats)
+        else:
+            logging.info("No min files to process")
+        
+        logging.info("=== Final Summary ===")
+        logging.info(f"Total Files Processed: {len(files_by_category['Solarlogs'])}")
+        logging.info(f"Total Processed: {stats['processed']}")
+        logging.info(f"Total Inserted: {stats['inserted']}")
+        logging.info(f"Total Updated: {stats['updated']}")
+        logging.info(f"Total Unchanged: {stats['unchanged']}")
+        logging.info("===================")
+                
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("ETL Process", f"ETL Error: {str(e)}", error_trace)
+        session.rollback()
+    finally:
+        session.close()
+        
+        # Send error summary if there were any errors
+        send_error_summary("Solarlogs ETL")
+        
+        logging.info("Solarlogs ETL process completed")
+
+def process_files_from_category(session, folder_path, files, category):
+    """Process files from a specific category using the appropriate processor"""
+    try:
+        logging.info(f"Processing {category} files...")
+        
+        # Fetch all dates from dimension table
+        all_dates = {}
+        for date in session.query(DimDate).all():
+            date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+            all_dates[date_str] = date.id_date
+        logging.info(f"Preloaded {len(all_dates)} dates")
+        
+        # Fetch all times from dimension table
+        all_times = {}
+        for time in session.query(DimTime).all():
+            time_str = f"{time.hour:02d}:{time.minute:02d}:00"
+            all_times[time_str] = time.id_time
+        logging.info(f"Preloaded {len(all_times)} times")
+        
+        # Fetch all inverters from dimension table
+        all_inverters = {}
+        for inverter in session.query(DimInverter).all():
+            all_inverters[inverter.inverterName] = inverter.id_inverter
+        logging.info(f"Preloaded {len(all_inverters)} inverters")
+        
+        # Fetch all statuses from dimension table
+        all_statuses = {}
+        for status in session.query(DimStatus).all():
+            all_statuses[status.statusName] = status.id_status
+        logging.info(f"Preloaded {len(all_statuses)} statuses")
+        
+        # Create a dictionary for existing records to enable updates
+        logging.info("Preloading existing records for updating...")
+        existing_records = {}
+        for record in session.query(FactSolarProduction).all():
+            record_key = (record.id_date, record.id_time, record.id_inverter, record.id_status)
+            existing_records[record_key] = record
+        
+        logging.info(f"Preloaded {len(existing_records)} existing records for checking")
+        
+        # Process files with stats tracking
+        stats = {'processed': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0}
+        process_files_by_type(session, folder_path, files, category, all_dates, all_times, 
+                             all_inverters, all_statuses, existing_records, stats)
+        
+        return True
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Category Processing", f"Error processing {category} files: {str(e)}", error_trace)
+        return False
 
 if __name__ == "__main__":
-    etl = SolarProductionETL()
-    etl.run()
+    populate_dim_tables_and_facts()
