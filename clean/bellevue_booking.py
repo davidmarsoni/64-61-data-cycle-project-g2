@@ -60,7 +60,8 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         invalid_dates = data[data['Date'].isnull()]
         if not invalid_dates.empty:
             logging.warning(f"Invalid dates found in {filename}: {len(invalid_dates)} rows")
-            #for index, row in invalid_dates.iterrows():
+            # You can uncomment the following lines to log the details of invalid dates
+            # for index, row in invalid_dates.iterrows():
             #    logging.warning(
             #        f"Row {index}: Original Date: {row['Date_original']} - Parsed Date: {row['Date']} - {row['Nom']} - {row['Date de début']} - {row['Date de fin']}"
             #    )
