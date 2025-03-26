@@ -393,8 +393,8 @@ def merge_datasets(pv_df, weather_df, pred_df=None, tolerance='30min'):
                 ]
                 
                 if not relevant_preds.empty and 'prediction' in relevant_preds.columns:
-                    # Sort by prediction horizon (lower is better)
-                    relevant_preds = relevant_preds.sort_values('prediction')
+                    # Sort by prediction horizon (higher is better)
+                    relevant_preds = relevant_preds.sort_values('prediction', ascending=False)
                     best_pred = relevant_preds.iloc[0]
                     
                     # Get indices of rows to update
@@ -522,6 +522,51 @@ def handle_missing_data(df, method='interpolate'):
     return processed_df
 
 
+def prepare_model_features_predictions_only(df):
+    """
+    Prepare features for model training using only weather predictions (no measurements).
+    """
+    if df.empty:
+        return pd.DataFrame(), pd.Series()
+    
+    # Select only prediction features
+    features = []
+    
+    # Solar radiation prediction (most important)
+    if 'pred_glob_ctrl' in df.columns:
+        features.append('pred_glob_ctrl')
+    
+    # Temperature prediction
+    if 'pred_t_2m_ctrl' in df.columns:
+        features.append('pred_t_2m_ctrl')
+    
+    # Humidity prediction
+    if 'pred_relhum_2m_ctrl' in df.columns:
+        features.append('pred_relhum_2m_ctrl')
+    
+    # Precipitation prediction (if available)
+    if 'pred_tot_prec_ctrl' in df.columns:
+        features.append('pred_tot_prec_ctrl')
+    
+    # Time-based features (always available)
+    if 'hour_sin' in df.columns and 'hour_cos' in df.columns:
+        features.extend(['hour_sin', 'hour_cos'])
+    if 'day_of_year' in df.columns:
+        features.append('day_of_year')
+    
+    # Create feature matrix and target vector
+    X = df[features].copy()
+    
+    # Target variable
+    if 'pv_output' in df.columns:
+        y = df['pv_output']
+    else:
+        print("Warning: Target variable 'pv_output' not found.")
+        return X, None
+    
+    return X, y
+
+
 def prepare_model_features(df):
     """
     Prepare features for model training.
@@ -541,7 +586,6 @@ def prepare_model_features(df):
     # Solar radiation is the most important predictor (if available)
     if 'pred_glob_ctrl' in df.columns:
         features.append('pred_glob_ctrl')
-    
     # Temperature features
     if 'pred_t_2m_ctrl' in df.columns:
         features.append('pred_t_2m_ctrl')
@@ -918,20 +962,22 @@ def save_model(model_info, output_path=None):
 # Main Execution Code
 # ---------------------------------
 
-def main(data_date=None, save_outputs=True, target_variable='pac'):
+def main_compare_models(data_date=None, save_outputs=True, target_variable='pac'):
     """
-    Main function to run the model training and prediction pipeline.
+    Main function to run and compare two models:
+    1. Complete model using all available features
+    2. Prediction-only model using only weather predictions
     
     Parameters:
         data_date (str, optional): Date string in 'YYYY-MM-DD' format for data loading
-        save_outputs (bool): Whether to save model and predictions to files
+        save_outputs (bool): Whether to save models and predictions to files
         target_variable (str): Target to predict - 'pac' for power or 'daysum' for daily energy
         
     Returns:
-        dict: Model information and results
+        dict: Dictionary containing both models' information and results
     """
-    print("Solar Energy Production Prediction Model")
-    print("=" * 40)
+    print("Solar Energy Production Prediction Model - Model Comparison")
+    print("=" * 60)
     print(f"Target variable: {target_variable}")
     
     # Get directories
@@ -1044,80 +1090,271 @@ def main(data_date=None, save_outputs=True, target_variable='pac'):
     if not merged_data.empty:
         print(f"Merged data: {merged_data.shape[0]} records, {merged_data.shape[1]} columns")
         print(f"Columns: {merged_data.columns.tolist()}")
+    else:
+        print("ERROR: No data available after merging. Check data compatibility.")
+        return None
     
     # Handle missing data
     print("\nHandling missing data...")
     clean_data = handle_missing_data(merged_data, method='interpolate')
     
-    # Prepare features for model
-    print("\nPreparing model features...")
-    X, y = prepare_model_features(clean_data)
+    # Prepare features for full model
+    print("\nPreparing full model features...")
+    X_full, y = prepare_model_features(clean_data)
     
-    if not X.empty and y is not None:
-        # Train the model
-        print("\nTraining model...")
-        model_info = train_model(X, y, model_type='random_forest')
+    # Prepare features for prediction-only model
+    print("\nPreparing prediction-only model features...")
+    X_pred_only, y_same = prepare_model_features_predictions_only(clean_data)
+    
+    results = {}
+    
+    # Train and evaluate full model
+    if not X_full.empty and y is not None:
+        print("\nTraining full model...")
+        full_model_info = train_model(X_full, y, model_type='random_forest')
+        full_predictions = predict_pv_output(full_model_info, clean_data)
         
-        # Make predictions on the same data to visualize performance
-        print("\nEvaluating model...")
-        predictions = predict_pv_output(model_info, clean_data)
+        print("\nFull model metrics:")
+        print(f"RMSE: {full_model_info['metrics']['RMSE']:.4f}")
+        print(f"MAE: {full_model_info['metrics']['MAE']:.4f}")
+        print(f"R2: {full_model_info['metrics']['R2']:.4f}")
         
-        # Visualize results
-        visualize_predictions(
-            clean_data['pv_output'], 
-            predictions['predicted_pv_output'],
-            f"PV Output ({target_variable}): Actual vs Predicted"
-        )
+        results['full_model'] = full_model_info
+        results['full_predictions'] = full_predictions
         
-        # Visualize feature importance
-        visualize_feature_importance(model_info)
-        
-        # Plot daily production
-        if target_variable.lower() == 'pac':
-            # For PAC, we need to sum up to get daily production
-            if 'datetime' in predictions.columns:
-                predictions['date'] = predictions['datetime'].dt.date
-                plot_daily_production(predictions, date_col='date', value_col='predicted_pv_output')
-        else:
-            # For DaySum, each record already represents daily production
-            plot_daily_production(predictions, date_col='datetime', value_col='predicted_pv_output')
-        
-        # Save outputs if requested
-        if save_outputs:
-            # Create filenames with target variable
-            target_suffix = target_variable.lower()
-            
-            # Save predictions to CSV
-            output_dir = 'predictions'
-            os.makedirs(output_dir, exist_ok=True)
-            current_date = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-            csv_path = os.path.join(output_dir, f"pv_predictions_{target_suffix}_{current_date}.csv")
-            
-            # Save model
-            model_dir = 'models'
-            os.makedirs(model_dir, exist_ok=True)
-            current_date = datetime.now().strftime('%Y-%m-%d')
-            model_path = os.path.join(model_dir, f"pv_prediction_model_{target_suffix}_{current_date}.pkl")
-            
-            # Save files
-            csv_path = save_predictions_to_csv(predictions, output_path=csv_path)
-            model_path = save_model(model_info, output_path=model_path)
-            
-            print(f"\nOutputs saved:")
-            if csv_path:
-                print(f"  Predictions: {csv_path}")
-            if model_path:
-                print(f"  Model: {model_path}")
-        
-        return {
-            'model_info': model_info,
-            'data': clean_data,
-            'predictions': predictions,
-            'target_variable': target_variable
-        }
+        # Print full model feature importance
+        if 'feature_importance' in full_model_info and full_model_info['feature_importance'] is not None:
+            print("\nFull model feature importance:")
+            print(full_model_info['feature_importance'])
     else:
-        print("Error: Failed to prepare features for modeling.")
-        return None
+        print("WARNING: Cannot train full model due to missing features or target.")
+    
+    # Train and evaluate prediction-only model
+    if not X_pred_only.empty and y_same is not None:
+        print("\nTraining prediction-only model...")
+        pred_model_info = train_model(X_pred_only, y_same, model_type='random_forest')
+        pred_predictions = predict_pv_output(pred_model_info, clean_data)
+        
+        print("\nPrediction-only model metrics:")
+        print(f"RMSE: {pred_model_info['metrics']['RMSE']:.4f}")
+        print(f"MAE: {pred_model_info['metrics']['MAE']:.4f}")
+        print(f"R2: {pred_model_info['metrics']['R2']:.4f}")
+        
+        results['pred_model'] = pred_model_info
+        results['pred_predictions'] = pred_predictions
+        
+        # Print prediction-only model feature importance
+        if 'feature_importance' in pred_model_info and pred_model_info['feature_importance'] is not None:
+            print("\nPrediction-only model feature importance:")
+            print(pred_model_info['feature_importance'])
+    else:
+        print("WARNING: Cannot train prediction-only model due to missing features or target.")
+    
+    # Compare model performance
+    if 'full_model' in results and 'pred_model' in results:
+        print("\nModel Comparison:")
+        print("-" * 40)
+        print(f"Full model RMSE: {results['full_model']['metrics']['RMSE']:.4f}")
+        print(f"Prediction-only model RMSE: {results['pred_model']['metrics']['RMSE']:.4f}")
+        print(f"Performance difference: {results['pred_model']['metrics']['RMSE'] - results['full_model']['metrics']['RMSE']:.4f}")
+        
+        print(f"\nFull model R2: {results['full_model']['metrics']['R2']:.4f}")
+        print(f"Prediction-only model R2: {results['pred_model']['metrics']['R2']:.4f}")
+        print(f"Performance difference: {results['full_model']['metrics']['R2'] - results['pred_model']['metrics']['R2']:.4f}")
+    
+    # Visualize comparison
+    if 'full_predictions' in results and 'pred_predictions' in results:
+        # Scatter plots for actual vs predicted
+        plt.figure(figsize=(14, 7))
+        
+        plt.subplot(1, 2, 1)
+        plt.scatter(clean_data['pv_output'], results['full_predictions']['predicted_pv_output'], alpha=0.5)
+        max_val = max(clean_data['pv_output'].max(), results['full_predictions']['predicted_pv_output'].max())
+        plt.plot([0, max_val], [0, max_val], 'r--')
+        plt.xlabel('Actual PV Output')
+        plt.ylabel('Predicted PV Output')
+        plt.title('Full Model Performance')
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(1, 2, 2)
+        plt.scatter(clean_data['pv_output'], results['pred_predictions']['predicted_pv_output'], alpha=0.5)
+        max_val = max(clean_data['pv_output'].max(), results['pred_predictions']['predicted_pv_output'].max())
+        plt.plot([0, max_val], [0, max_val], 'r--')
+        plt.xlabel('Actual PV Output')
+        plt.ylabel('Predicted PV Output')
+        plt.title('Prediction-Only Model Performance')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Time series comparison plot (for a sample period)
+        if 'datetime' in clean_data.columns or (isinstance(clean_data.index, pd.DatetimeIndex)):
+            # Get datetime column or use index
+            if 'datetime' in clean_data.columns:
+                datetime_col = clean_data['datetime']
+            else:
+                datetime_col = clean_data.index
+                clean_data = clean_data.reset_index()
+                
+            # Get a representative sample period (e.g., 7 days)
+            sample_start = datetime_col.min()
+            sample_end = sample_start + pd.Timedelta(days=7)
+            
+            sample_mask = (datetime_col >= sample_start) & (datetime_col <= sample_end)
+            sample_data = clean_data[sample_mask].copy()
+            
+            if not sample_data.empty:
+                plt.figure(figsize=(15, 6))
+                plt.plot(sample_data['datetime'], sample_data['pv_output'], 'k-', label='Actual')
+                plt.plot(sample_data['datetime'], results['full_predictions'].loc[sample_data.index, 'predicted_pv_output'], 'b-', label='Full Model')
+                plt.plot(sample_data['datetime'], results['pred_predictions'].loc[sample_data.index, 'predicted_pv_output'], 'r-', label='Pred-Only Model')
+                
+                plt.xlabel('Date/Time')
+                plt.ylabel('PV Output')
+                plt.title('Model Comparison - Time Series (Sample Period)')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.show()
+# Calculate and display error metrics by hour of day
+                if 'hour' in sample_data.columns:
+                    sample_data['full_error'] = abs(sample_data['pv_output'] - results['full_predictions'].loc[sample_data.index, 'predicted_pv_output'])
+                    sample_data['pred_error'] = abs(sample_data['pv_output'] - results['pred_predictions'].loc[sample_data.index, 'predicted_pv_output'])
+                    
+                    # Group by hour and calculate mean error
+                    hourly_errors = sample_data.groupby('hour').agg({
+                        'full_error': 'mean',
+                        'pred_error': 'mean',
+                        'pv_output': 'mean'  # For reference
+                    }).reset_index()
+                    
+                    # Plot hourly errors
+                    plt.figure(figsize=(12, 6))
+                    plt.bar(hourly_errors['hour'] - 0.2, hourly_errors['full_error'], width=0.4, label='Full Model Error', alpha=0.7, color='blue')
+                    plt.bar(hourly_errors['hour'] + 0.2, hourly_errors['pred_error'], width=0.4, label='Pred-Only Model Error', alpha=0.7, color='red')
+                    plt.plot(hourly_errors['hour'], hourly_errors['pv_output'], 'k--', label='Avg PV Output')
+                    
+                    plt.xlabel('Hour of Day')
+                    plt.ylabel('Mean Absolute Error')
+                    plt.title('Error Comparison by Hour of Day')
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.xticks(range(0, 24))
+                    plt.tight_layout()
+                    plt.show()
+    
+    # Test models on future prediction data only
+    # This simulates how the model would perform in deployment
+    if 'pred_data' in locals() and not pred_data.empty:
+        print("\nTesting models on prediction data only (deployment simulation)...")
+        
+        # Prepare features using only prediction data
+        future_data = pred_data.copy()
+        
+        # Add time-based features
+        future_data['hour_sin'] = np.sin(2 * np.pi * future_data.index.hour / 24)
+        future_data['hour_cos'] = np.cos(2 * np.pi * future_data.index.hour / 24)
+        future_data['day_of_year'] = future_data.index.dayofyear / 365.0
+        
+        # Select a recent date range to simulate future predictions
+        recent_mask = future_data.index >= (future_data.index.max() - pd.Timedelta(days=7))
+        future_sample = future_data[recent_mask]
+        
+        if not future_sample.empty:
+            # Make predictions using only the prediction-only model
+            # (Skip full model since it requires measurements we won't have)
+            if 'pred_model' in results:
+                pred_future_predictions = predict_pv_output(results['pred_model'], future_sample)
+                print("Generated prediction-only model predictions for simulated future data.")
+                
+                # Plot predictions for future data
+                plt.figure(figsize=(15, 6))
+                plt.plot(pred_future_predictions.index, pred_future_predictions['predicted_pv_output'], 'r-', 
+                        label='Pred-Only Model Prediction')
+                
+                plt.xlabel('Date/Time')
+                plt.ylabel('Predicted PV Output')
+                plt.title('Future Predictions (Deployment Simulation)')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.show()
+    
+    # Save outputs if requested
+    if save_outputs:
+        # Create output directories
+        output_dir = 'predictions'
+        model_dir = 'models'
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Create filenames with target variable and current date
+        target_suffix = target_variable.lower()
+        current_date = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        
+        # Save models if available
+        if 'full_model' in results:
+            full_model_path = os.path.join(model_dir, f"full_model_{target_suffix}_{current_date}.pkl")
+            save_model(results['full_model'], output_path=full_model_path)
+            print(f"Full model saved to: {full_model_path}")
+        
+        if 'pred_model' in results:
+            pred_model_path = os.path.join(model_dir, f"pred_only_model_{target_suffix}_{current_date}.pkl")
+            save_model(results['pred_model'], output_path=pred_model_path)
+            print(f"Prediction-only model saved to: {pred_model_path}")
+        
+        # Save predictions if available
+        if 'full_predictions' in results:
+            full_pred_path = os.path.join(output_dir, f"full_model_predictions_{target_suffix}_{current_date}.csv")
+            save_predictions_to_csv(results['full_predictions'], output_path=full_pred_path)
+            print(f"Full model predictions saved to: {full_pred_path}")
+        
+        if 'pred_predictions' in results:
+            pred_pred_path = os.path.join(output_dir, f"pred_only_predictions_{target_suffix}_{current_date}.csv")
+            save_predictions_to_csv(results['pred_predictions'], output_path=pred_pred_path)
+            print(f"Prediction-only model predictions saved to: {pred_pred_path}")
+        
+        
+        if 'pred_future_predictions' in locals():
+            pred_future_path = os.path.join(output_dir, f"pred_only_future_predictions_{target_suffix}_{current_date}.csv")
+            save_predictions_to_csv(pred_future_predictions, output_path=pred_future_path)
+            print(f"Prediction-only model future predictions saved to: {pred_future_path}")
+    
+    # Generate detailed report
+    print("\n" + "="*60)
+    print("MODEL COMPARISON SUMMARY REPORT")
+    print("="*60)
+    
+    if 'full_model' in results and 'pred_model' in results:
+        performance_diff = results['pred_model']['metrics']['RMSE'] - results['full_model']['metrics']['RMSE']
+        relative_diff_pct = (performance_diff / results['full_model']['metrics']['RMSE']) * 100
+        
+        print(f"Model Type: {target_variable.upper()} Prediction")
+        print(f"Full Model Features: {', '.join(results['full_model']['features'])}")
+        print(f"Pred-Only Features: {', '.join(results['pred_model']['features'])}")
+        print("\nPerformance Metrics:")
+        print(f"  Full Model RMSE: {results['full_model']['metrics']['RMSE']:.4f}")
+        print(f"  Pred-Only RMSE: {results['pred_model']['metrics']['RMSE']:.4f}")
+        print(f"  Absolute Difference: {performance_diff:.4f}")
+        print(f"  Relative Difference: {relative_diff_pct:.2f}%")
+        print(f"\n  Full Model R²: {results['full_model']['metrics']['R2']:.4f}")
+        print(f"  Pred-Only R²: {results['pred_model']['metrics']['R2']:.4f}")
+        print(f"  Difference: {results['full_model']['metrics']['R2'] - results['pred_model']['metrics']['R2']:.4f}")
+        
+        # Recommendation
+        if relative_diff_pct <= 10:
+            print("\nRECOMMENDATION: The prediction-only model performs within 10% of the full model.")
+            print("You can confidently deploy the prediction-only model for operational use.")
+        elif relative_diff_pct <= 20:
+            print("\nRECOMMENDATION: The prediction-only model shows moderate degradation compared to the full model.")
+            print("Consider if this level of performance is acceptable for your application.")
+        else:
+            print("\nRECOMMENDATION: The prediction-only model shows significant degradation compared to the full model.")
+            print("Consider enhancing the prediction-only model with additional derived features or using a more complex model architecture.")
+    
+    return results
+    
 
 
 if __name__ == "__main__":
@@ -1125,4 +1362,4 @@ if __name__ == "__main__":
     target = 'pac'  # Change to 'daysum' for daily energy prediction
     
     # You can specify a data date here
-    results = main(data_date='2025-03-11', save_outputs=True, target_variable=target)
+    results = main_compare_models(data_date='2025-03-14',save_outputs=True, target_variable=target)
