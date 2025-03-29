@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from ETL.utils.utils import get_connection_string
+import logging
 
 Base = declarative_base()
 
@@ -22,13 +23,13 @@ def init_db():
     
     # Create tables if they don't exist
     Base.metadata.create_all(engine)
-    print("Database tables created or verified.")
-    
+    logging.info("Database tables initialized and created if they didn't exist.")
+        
     # check if all the tables are created
     tables = Base.metadata.tables.keys()
     if not tables:
-        print("No tables found in the database.")
+        logging.warning("No tables found in the database.")
     else:
-        print(f"Tables found: {', '.join(tables)}")
+        logging.info(f"Tables found: {', '.join(tables)}")
         
     return engine

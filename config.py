@@ -256,8 +256,8 @@ class Config:
         """
         # Check if email configuration is available
         if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
-            logging.error("Email configuration is missing. Cannot send error notification.")
-            return
+            logging.warning("Email notification skipped: Missing email configuration.")
+            return False
         
         try:
             msg = MIMEMultipart()
@@ -295,6 +295,8 @@ class Config:
                 server.send_message(msg)
             
             logging.info("Error notification email sent successfully")
+            return True
             
         except Exception as e:
             logging.error(f"Failed to send error email: {e}")
+            return False

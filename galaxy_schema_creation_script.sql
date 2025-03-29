@@ -21,7 +21,7 @@ CREATE TABLE DimDate (
     id_date INT PRIMARY KEY IDENTITY(1,1),
     year INT NOT NULL,
     month INT NOT NULL,
-    day INT NOT NULL,
+    day INT NOT NULL
 );
 
 CREATE TABLE DimTime (
@@ -60,6 +60,11 @@ CREATE TABLE DimDivision (
     divisionName VARCHAR(255) NOT NULL
 );
 
+CREATE TABLE DimClassRoom (
+    id_classroom INT PRIMARY KEY IDENTITY(1,1),
+    classroomName VARCHAR(255) NOT NULL
+);
+
 -- ==============================
 -- Dimension Tables Specific to FactSolarProduction
 -- ==============================
@@ -94,10 +99,13 @@ CREATE TABLE FactBookings (
     id_room INT NOT NULL,
     id_user INT NOT NULL,
     id_professor INT NULL,
+    id_classroom INT NULL,
     id_bookingType INT NOT NULL,
     id_division INT NULL,
     id_activity INT NULL,
-
+    is_active BIT NOT NULL DEFAULT 1,
+    last_modified DATETIME NOT NULL DEFAULT GETDATE(),
+    external_id VARCHAR(255) NULL,
 
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time_start) REFERENCES DimTime(id_time),
@@ -105,10 +113,10 @@ CREATE TABLE FactBookings (
     FOREIGN KEY (id_room) REFERENCES DimRoom(id_room),
     FOREIGN KEY (id_user) REFERENCES DimUser(id_user),
     FOREIGN KEY (id_professor) REFERENCES DimUser(id_user),
+    FOREIGN KEY (id_classroom) REFERENCES DimClassRoom(id_classroom),
     FOREIGN KEY (id_bookingType) REFERENCES DimBookingType(id_bookingType),
     FOREIGN KEY (id_division) REFERENCES DimDivision(id_division),
     FOREIGN KEY (id_activity) REFERENCES DimActivity(id_activity)
-    
 );
 
 CREATE TABLE FactEnergyConsumption (

@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean, DateTime
 from ETL.db.base import Base
+import datetime
 
 class DimDate(Base):
     __tablename__ = 'DimDate'
@@ -28,7 +29,6 @@ class DimRoom(Base):
     
     id_room = Column(Integer, primary_key=True, autoincrement=True)
     roomName = Column(String(255), nullable=False)
-    roomFullName = Column(String(255), nullable=False)
 
 class DimUser(Base):
     __tablename__ = 'DimUser'
@@ -54,6 +54,12 @@ class DimDivision(Base):
     
     id_division = Column(Integer, primary_key=True, autoincrement=True)
     divisionName = Column(String(255), nullable=False)
+
+class DimClassRoom(Base):
+    __tablename__ = 'DimClassRoom'
+    
+    id_classroom = Column(Integer, primary_key=True, autoincrement=True)
+    classroomName = Column(String(255), nullable=False)
 
 class DimInverter(Base):
     __tablename__ = 'DimInverter'
@@ -91,9 +97,13 @@ class FactBookings(Base):
     id_room = Column(Integer, ForeignKey('DimRoom.id_room'), nullable=False)
     id_user = Column(Integer, ForeignKey('DimUser.id_user'), nullable=False)
     id_professor = Column(Integer, ForeignKey('DimUser.id_user'), nullable=True)
+    id_classroom = Column(Integer, ForeignKey('DimClassRoom.id_classroom'), nullable=True)
     id_bookingType = Column(Integer, ForeignKey('DimBookingType.id_bookingType'), nullable=False)
     id_division = Column(Integer, ForeignKey('DimDivision.id_division'), nullable=True)
     id_activity = Column(Integer, ForeignKey('DimActivity.id_activity'), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_modified = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now, nullable=False)
+    external_id = Column(String(255), nullable=True)  # To track unique identifier from source system
 
 class FactEnergyConsumption(Base):
     __tablename__ = 'FactEnergyConsumption'
