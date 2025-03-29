@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from ETL.Fact.ETL_process_Temperature_Humidity_Consumption import populate_dim_tables_and_facts as run_consumption_etl
 from ETL.Fact.ETL_process_Solar import populate_dim_tables_and_facts as run_solar_etl
-from ETL.Fact.ETL_process_RoomAllocation import RoomAllocationETL
+from ETL.Fact.ETL_process_RoomAllocation import populate_dim_tables_and_facts as run_room_allocation_etl
 from ETL.Fact.ETL_process_Meteo import populate_dim_tables_and_facts as run_meteo_etl
 from ETL.utils.logging_utils import setup_logging, send_error_summary
 
@@ -33,8 +33,7 @@ def run_etl():
         
         # Run Room Allocation ETL
         logger.info("Starting Room Allocation ETL process")
-        room_etl = RoomAllocationETL()
-        room_etl.run()
+        run_room_allocation_etl()
         logger.info("Room Allocation ETL process completed")
         
         # Run Meteo ETL
