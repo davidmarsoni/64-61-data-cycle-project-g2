@@ -71,7 +71,7 @@ Before running any step of the project, you need to configure the creidentials u
 
 > Make sure to have the `.env` file in the root of the project before running this script. and also make sure to have the `python` installed on your machine.
 
-## Run of the project
+## Run of the project manually
 
 To run the project locally or scheduled on a server you need to respect the following steps:
 
@@ -112,3 +112,19 @@ python data_ETL.py
 5. Open the dashboard
 
 Open the powerbi dashboard with the .pbix file in the `dashboard` folder. You can use the Power BI Desktop application to open the file and connect to the database. The dashboard is already configured to connect to the database.
+
+## Run the project automatically
+
+To make this project run automatically, you just need to first fill the `.env` file with the credentials and then run the 'set_credentials.py' script to set the credentials in the database.
+
+Then you need to run the database setup script to create the database and the tables. This script will also populate the database with the cleaned data.
+
+```bash
+python init/setup_database.py --force
+```
+
+After that you can just run the 'scheduler.bat' inside the `init` folder. This script will create a schedule task that will run the laucher.bat script every day at 7:30. This script will run the data collector, data cleaner, and data ETL scripts in order to collect, clean, and populate the data into the database each day.
+
+```bash
+scheduler.bat
+```
