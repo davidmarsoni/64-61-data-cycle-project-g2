@@ -39,6 +39,12 @@ from dotenv import load_dotenv
 ensure_installed('keyring')
 import keyring
 
+# Ensure chardet is installed for file encoding detection
+ensure_installed('chardet')
+
+# Ensure pandas is installed for data manipulation
+ensure_installed('pandas')
+
 # Load environment variables from .env file (for non-sensitive config)
 load_dotenv()
 
