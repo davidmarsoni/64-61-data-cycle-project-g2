@@ -13,4 +13,4 @@ def get_or_create_booking_type(session, code, booking_type):
         )
         session.add(booking_type_entry)
         session.commit()
-    return booking_type_entry.id_bookingType
+    return booking_type_entry.id_bookingtype

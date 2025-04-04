@@ -1,11 +1,11 @@
 import logging
 from sqlalchemy.exc import SQLAlchemyError
-from ETL.db.models import DimClassRoom
+from ETL.db.models import DimClassroom
 from ETL.utils.logging_utils import log_error
 
 def get_or_create_classroom(session, classroom_name):
     """
-    Get or create a classroom record in the DimClassRoom table
+    Get or create a classroom record in the DimClassroom table
     
     Args:
         session: SQLAlchemy session
@@ -19,15 +19,15 @@ def get_or_create_classroom(session, classroom_name):
     
     try:
         # Check if classroom already exists
-        classroom = session.query(DimClassRoom).filter(
-            DimClassRoom.classroomName == classroom_name
+        classroom = session.query(DimClassroom).filter(
+            DimClassroom.classroomName == classroom_name
         ).first()
         
         if classroom:
             return classroom.id_classroom
         
         # Create new classroom
-        new_classroom = DimClassRoom(classroomName=classroom_name)
+        new_classroom = DimClassroom(classroomName=classroom_name)
         session.add(new_classroom)
         session.flush()  # Flush to get the ID without committing transaction
         

@@ -50,7 +50,7 @@ CREATE TABLE DimActivity (
 );
 
 CREATE TABLE DimBookingType (
-    id_bookingType INT PRIMARY KEY IDENTITY(1,1),
+    id_bookingtype INT PRIMARY KEY IDENTITY(1,1),
     code VARCHAR(50) NOT NULL,
     bookingType VARCHAR(100) NOT NULL
 );
@@ -60,7 +60,7 @@ CREATE TABLE DimDivision (
     divisionName VARCHAR(255) NOT NULL
 );
 
-CREATE TABLE DimClassRoom (
+CREATE TABLE DimClassroom (
     id_classroom INT PRIMARY KEY IDENTITY(1,1),
     classroomName VARCHAR(255) NOT NULL
 );
@@ -88,7 +88,7 @@ CREATE TABLE DimSite (
 );
 
 -- ==============================
--- Fact Table
+-- Fact Tables
 -- ==============================
 
 CREATE TABLE FactBookings (
@@ -100,12 +100,12 @@ CREATE TABLE FactBookings (
     id_user INT NOT NULL,
     id_professor INT NULL,
     id_classroom INT NULL,
-    id_bookingType INT NOT NULL,
+    id_bookingtype INT NOT NULL,
     id_division INT NULL,
     id_activity INT NULL,
-    is_active BIT NOT NULL DEFAULT 1,
-    last_modified DATETIME NOT NULL DEFAULT GETDATE(),
-    external_id VARCHAR(255) NULL,
+    isActive BIT NOT NULL DEFAULT 1,
+    lastModified DATETIME NOT NULL DEFAULT GETDATE(),
+    externalId VARCHAR(255) NULL,
 
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time_start) REFERENCES DimTime(id_time),
@@ -113,17 +113,17 @@ CREATE TABLE FactBookings (
     FOREIGN KEY (id_room) REFERENCES DimRoom(id_room),
     FOREIGN KEY (id_user) REFERENCES DimUser(id_user),
     FOREIGN KEY (id_professor) REFERENCES DimUser(id_user),
-    FOREIGN KEY (id_classroom) REFERENCES DimClassRoom(id_classroom),
-    FOREIGN KEY (id_bookingType) REFERENCES DimBookingType(id_bookingType),
+    FOREIGN KEY (id_classroom) REFERENCES DimClassroom(id_classroom),
+    FOREIGN KEY (id_bookingtype) REFERENCES DimBookingType(id_bookingtype),
     FOREIGN KEY (id_division) REFERENCES DimDivision(id_division),
     FOREIGN KEY (id_activity) REFERENCES DimActivity(id_activity)
 );
 
 CREATE TABLE FactEnergyConsumption (
-    id_FactEnergyConsumption INT PRIMARY KEY IDENTITY(1,1),
+    id_energyconsumption INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
-    energy_consumed FLOAT NOT NULL, 
+    energyConsumed FLOAT NOT NULL, 
     humidity FLOAT NOT NULL,
     temperature FLOAT NOT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
@@ -131,32 +131,32 @@ CREATE TABLE FactEnergyConsumption (
 );
 
 CREATE TABLE FactSolarProduction (
-    id_FactSolarProduction INT PRIMARY KEY IDENTITY(1,1),
+    id_solarproduction INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     id_inverter INT NOT NULL,
     id_status INT NOT NULL,
-    total_energy_produced FLOAT NOT NULL, -- Total energy produced By the whole power plant
-    energy_produced FLOAT NOT NULL, -- Energy produced by 1 inverter
-    error_count INT NOT NULL, -- Number of errors for the inverter
+    totalEnergyProduced FLOAT NOT NULL, 
+    energyProduced FLOAT NOT NULL, 
+    errorCount INT NOT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
-    FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
+    FOREIGN KEY (id_time) REFERENCES DimTime(id_time),
+    FOREIGN KEY (id_inverter) REFERENCES DimInverter(id_inverter),
+    FOREIGN KEY (id_status) REFERENCES DimStatus(id_status)
 );
 
 CREATE TABLE FactPrediction (
-    id_FactPredictionWeather INT PRIMARY KEY IDENTITY(1,1),
+    id_prediction INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
-
-    predicted_consumption FLOAT NOT NULL,
-    predicted_production FLOAT NOT NULL,
-
+    predictedConsumption FLOAT NOT NULL,
+    predictedProduction FLOAT NOT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
 
 CREATE TABLE FactMeteoSwissData (
-    id_FactMeteoSwissData INT PRIMARY KEY IDENTITY(1,1),
+    id_meteoswissdata INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
     id_site INT NOT NULL,

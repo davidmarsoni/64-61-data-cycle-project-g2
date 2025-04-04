@@ -160,7 +160,7 @@ def process_energy_files(session, consumption_df, temp_df, humidity_df):
                 records_to_insert.append({
                     'id_date': date_id,
                     'id_time': time_id,
-                    'energy_consumed': float(row['Value']),
+                    'energyConsumed': float(row['Value']),
                     'temperature': float(temperature),
                     'humidity': float(humidity)
                 })

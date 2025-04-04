@@ -24,7 +24,7 @@ from ETL.Dim.DimClassRoom import get_or_create_classroom
 from config import ensure_installed, Config
 from ETL.db.models import (
     DimDate, DimTime, DimRoom, DimUser, 
-    DimActivity, DimBookingType, DimDivision, DimClassRoom
+    DimActivity, DimBookingType, DimDivision, DimClassroom
 )
   
 # Ensure required packages are installed
@@ -132,12 +132,12 @@ def process_room_allocation_file(session, allocation_df):
         all_booking_types = {}
         for booking_type in session.query(DimBookingType).all():
             key = (booking_type.code, booking_type.bookingType)
-            all_booking_types[key] = booking_type.id_bookingType
+            all_booking_types[key] = booking_type.id_bookingtype
         logging.info(f"Preloaded {len(all_booking_types)} booking types")
         
         # Fetch all classrooms from dimension table
         all_classrooms = {}
-        for classroom in session.query(DimClassRoom).all():
+        for classroom in session.query(DimClassroom).all():
             all_classrooms[classroom.classroomName.lower()] = classroom.id_classroom
         logging.info(f"Preloaded {len(all_classrooms)} classrooms")
         
@@ -207,15 +207,15 @@ def process_room_allocation_file(session, allocation_df):
                 FactBookings.id_time_end,
                 FactBookings.id_room,
                 FactBookings.id_user,
-                FactBookings.external_id
+                FactBookings.externalId
             ).filter(
                 FactBookings.id_date.in_(list(date_set)),
-                FactBookings.is_active == True
+                FactBookings.isActive == True
             ).all()
             
             for booking in booking_query:
-                if booking.external_id:
-                    active_reservations[booking.external_id] = booking.id_booking
+                if booking.externalId:
+                    active_reservations[booking.externalId] = booking.id_booking
                     
             logging.info(f"Found {len(active_reservations)} active reservations in database")
         
@@ -227,7 +227,7 @@ def process_room_allocation_file(session, allocation_df):
             FactBookings.id_time_end,
             FactBookings.id_room,
             FactBookings.id_user
-        ).filter(FactBookings.is_active == True).all():
+        ).filter(FactBookings.isActive == True).all():
             existing_records.add((
                 record.id_date, 
                 record.id_time_start,
@@ -259,10 +259,10 @@ def process_room_allocation_file(session, allocation_df):
                     user_name = "Unknown User"
                     
                 # Create unique identifier for tracking
-                reservation_external_id = f"{date_str}_{time_start}_{time_end}_{room_name}_{user_name}"
+                reservation_externalId = f"{date_str}_{time_start}_{time_end}_{room_name}_{user_name}"
                 
                 # Skip if already in active reservations
-                if reservation_external_id in active_reservations:
+                if reservation_externalId in active_reservations:
                     stats['duplicates'] += 1
                     continue
                     
@@ -389,12 +389,12 @@ def process_room_allocation_file(session, allocation_df):
                     'id_user': user_id,
                     'id_professor': professor_id,
                     'id_activity': activity_id,
-                    'id_bookingType': booking_type_id,
+                    'id_bookingtype': booking_type_id,
                     'id_division': division_id,
                     'id_classroom': classroom_id,
-                    'is_active': True,
-                    'last_modified': datetime.now(),
-                    'external_id': reservation_external_id
+                    'isActive': True,
+                    'lastModified': datetime.now(),
+                    'externalId': reservation_externalId
                 })
                 stats['inserted'] += 1
                 
@@ -449,7 +449,7 @@ def process_room_allocation_file(session, allocation_df):
                     session.query(FactBookings).filter(
                         FactBookings.id_booking.in_(batch)
                     ).update(
-                        {FactBookings.is_active: False, FactBookings.last_modified: datetime.now()},
+                        {FactBookings.isActive: False, FactBookings.lastModified: datetime.now()},
                         synchronize_session=False
                     )
                     session.commit()
