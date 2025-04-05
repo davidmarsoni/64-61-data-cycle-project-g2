@@ -82,7 +82,6 @@ def validate_room_allocation_row(room_name, date_val, start_time, end_time, user
         if any(val is None or pd.isna(val) for val in required_fields):
             return False, "Missing required values"
         
-        # Additional validation could be added here (e.g., date format, time format)
         return True, "Valid"
     except Exception as e:
         return False, f"Validation error: {str(e)}"
@@ -272,7 +271,7 @@ def process_room_allocation_file(session, allocation_df):
                 booking_type_code = row.get('codes')
                 booking_type = row.get('reservation_type')
                 division = row.get('division')
-                classroom = row.get('class')  # Get the classroom field from CSV
+                classroom = row.get('class') 
                 
                 # Validate required data
                 is_valid, message = validate_room_allocation_row(
@@ -293,7 +292,7 @@ def process_room_allocation_file(session, allocation_df):
                     all_dates[date_str] = date_id
                 date_id = all_dates[date_str]
                 
-                # Handle time format - add seconds if missing
+                # Handle time format and add seconds if missing
                 if time_start and ':' in time_start and time_start.count(':') == 1:
                     time_start = f"{time_start}:00"
                 if time_end and ':' in time_end and time_end.count(':') == 1:
@@ -305,7 +304,6 @@ def process_room_allocation_file(session, allocation_df):
                         time_id = get_or_create_time(session, time_obj)
                         all_times[time_start] = time_id
                     except ValueError:
-                        # Try without seconds
                         time_obj = datetime.strptime(time_start, '%H:%M')
                         time_id = get_or_create_time(session, time_obj)
                         all_times[time_start] = time_id
@@ -317,7 +315,6 @@ def process_room_allocation_file(session, allocation_df):
                         time_id = get_or_create_time(session, time_obj)
                         all_times[time_end] = time_id
                     except ValueError:
-                        # Try without seconds
                         time_obj = datetime.strptime(time_end, '%H:%M')
                         time_id = get_or_create_time(session, time_obj)
                         all_times[time_end] = time_id
@@ -491,10 +488,9 @@ def populate_dim_tables_and_facts():
     # Check for files first before attempting any database operations
     organized_files = get_files_by_category()
     
-    # If the directory is empty, log an error and exit
+    # If the directory is empty, log an INFO message and exit 
     if not organized_files or not any(organized_files.values()):
-        log_error("File Search", "No files found in the directory")
-        send_error_summary("Room Allocation ETL")
+        logging.info("No files found in the directory. This is normal if data files don't arrive daily.")
         logging.info("Room Allocation ETL process completed without processing any files")
         return
     
@@ -507,6 +503,7 @@ def populate_dim_tables_and_facts():
         send_error_summary("Room Allocation ETL")
         return
     
+    # Create session after successful db initialization
     session = get_session()
     if not session:
         log_error("Database Session", "Failed to create database session")
@@ -557,7 +554,6 @@ def populate_dim_tables_and_facts():
         if session:
             session.close()
         
-        # Send error summary if there were any errors
         send_error_summary("Room Allocation ETL")
         
         # Log completion message

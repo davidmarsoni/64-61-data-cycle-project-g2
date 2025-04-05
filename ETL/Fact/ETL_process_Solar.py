@@ -488,13 +488,11 @@ def populate_dim_tables_and_facts():
     except Exception as e:
         error_trace = traceback.format_exc()
         log_error("Database Init", f"Error initializing database: {str(e)}", error_trace)
-        send_error_summary("Solarlogs ETL")
         return
         
     session = get_session()
     if not session:
         log_error("Database Session", "Failed to create database session")
-        send_error_summary("Solarlogs ETL")
         return
     
     try:
@@ -503,7 +501,6 @@ def populate_dim_tables_and_facts():
         
         if "Solarlogs" not in files_by_category or not files_by_category["Solarlogs"]:
             log_error("File Search", "No Solarlogs files found in any category")
-            send_error_summary("Solarlogs ETL")
             return
         
         # Process files for each category (PV and min) directly from files_by_category
@@ -593,7 +590,7 @@ def populate_dim_tables_and_facts():
     finally:
         session.close()
         
-        # Send error summary if there were any errors
+        # Send error summary if any errors occurred
         send_error_summary("Solarlogs ETL")
         
         logging.info("Solarlogs ETL process completed")
