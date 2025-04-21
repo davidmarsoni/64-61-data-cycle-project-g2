@@ -397,16 +397,16 @@ def process_files_by_type(session, folder_path, files, file_type, all_dates, all
                         
                         # Check if any values have changed
                         values_changed = (
-                            abs(existing_record.totalEnergyProduced - new_totalEnergyProduced) > 0.001 or
-                            abs(existing_record.energyProduced - new_energy_produced) > 0.001 or
-                            existing_record.errorCount != new_error_count
+                            abs(existing_record.total_energy_produced - new_totalEnergyProduced) > 0.001 or
+                            abs(existing_record.energy_produced - new_energy_produced) > 0.001 or
+                            existing_record.error_count != new_error_count
                         )
                         
                         if values_changed:
                             # Update existing record with new values
-                            existing_record.totalEnergyProduced = new_totalEnergyProduced
-                            existing_record.energyProduced = new_energy_produced
-                            existing_record.errorCount = new_error_count
+                            existing_record.total_energy_produced = new_totalEnergyProduced
+                            existing_record.energy_produced = new_energy_produced
+                            existing_record.error_count = new_error_count
                             file_stats['updated'] += 1
                         else:
                             file_stats['unchanged'] += 1
@@ -417,9 +417,9 @@ def process_files_by_type(session, folder_path, files, file_type, all_dates, all
                             id_time=time_id,
                             id_inverter=inverter_id,
                             id_status=status_id,
-                            totalEnergyProduced=new_totalEnergyProduced,
-                            energyProduced=new_energy_produced,
-                            errorCount=new_error_count
+                            total_energy_produced=new_totalEnergyProduced, # Use updated total_energy_produced
+                            energy_produced=new_energy_produced, # Use updated energy_produced
+                            error_count=new_error_count # Use updated error_count
                         )
                         session.add(new_record)
                         file_stats['inserted'] += 1

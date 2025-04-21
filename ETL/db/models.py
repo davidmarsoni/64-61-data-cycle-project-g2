@@ -45,7 +45,7 @@ class DimActivity(Base):
 class DimBookingType(Base):
     __tablename__ = 'DimBookingType'
     
-    id_bookingtype = Column(Integer, primary_key=True, autoincrement=True)
+    id_booking_type = Column(Integer, primary_key=True, autoincrement=True) 
     code = Column(String(50), nullable=False)
     bookingType = Column(String(100), nullable=False)
 
@@ -76,7 +76,7 @@ class DimStatus(Base):
 class FactMeteoSwissData(Base):
     __tablename__ = 'FactMeteoSwissData'
     
-    id_meteoswissdata = Column(Integer, primary_key=True, autoincrement=True)
+    id_meteo_swiss_data = Column(Integer, primary_key=True, autoincrement=True)
     id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
     id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
     id_site = Column(Integer, ForeignKey('DimSite.id_site'), nullable=False)
@@ -98,40 +98,40 @@ class FactBookings(Base):
     id_user = Column(Integer, ForeignKey('DimUser.id_user'), nullable=False)
     id_professor = Column(Integer, ForeignKey('DimUser.id_user'), nullable=True)
     id_classroom = Column(Integer, ForeignKey('DimClassroom.id_classroom'), nullable=True)
-    id_bookingtype = Column(Integer, ForeignKey('DimBookingType.id_bookingtype'), nullable=False)
+    id_booking_type = Column(Integer, ForeignKey('DimBookingType.id_booking_type'), nullable=False)
     id_division = Column(Integer, ForeignKey('DimDivision.id_division'), nullable=True)
     id_activity = Column(Integer, ForeignKey('DimActivity.id_activity'), nullable=True)
-    isActive = Column(Boolean, default=True, nullable=False)
-    lastModified = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now, nullable=False)
-    externalId = Column(String(255), nullable=True)  # To track unique identifier from source system
+    is_active = Column(Boolean, default=True, nullable=False) # Renamed from isActive
+    last_modified = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now, nullable=False)
+    external_id = Column(String(255), nullable=True)  # Renamed from externalId
 
 class FactEnergyConsumption(Base):
     __tablename__ = 'FactEnergyConsumption'
     
-    id_energyconsumption = Column(Integer, primary_key=True, autoincrement=True)
+    id_energy_consumption = Column(Integer, primary_key=True, autoincrement=True)
     id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
     id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    energyConsumed = Column(Float, nullable=False)
+    energy_consumed = Column(Float, nullable=False)
     humidity = Column(Float, nullable=False)
     temperature = Column(Float, nullable=False)
 
 class FactSolarProduction(Base):
     __tablename__ = 'FactSolarProduction'
     
-    id_solarproduction = Column(Integer, primary_key=True, autoincrement=True)
+    id_solar_production = Column(Integer, primary_key=True, autoincrement=True)
     id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
     id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
     id_inverter = Column(Integer, ForeignKey('DimInverter.id_inverter'), nullable=False)
     id_status = Column(Integer, ForeignKey('DimStatus.id_status'), nullable=False)
-    totalEnergyProduced = Column(Float, nullable=False)
-    energyProduced = Column(Float, nullable=False)
-    errorCount = Column(Integer, nullable=False)
+    total_energy_produced = Column(Float, nullable=False)
+    energy_produced = Column(Float, nullable=False)
+    error_count = Column(Integer, nullable=False)
 
 class FactPrediction(Base):
     __tablename__ = 'FactPrediction'
     
-    id_prediction = Column(Integer, primary_key=True, autoincrement=True)
+    id_prediction_weather = Column(Integer, primary_key=True, autoincrement=True)
     id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
     id_time = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    predictedConsumption = Column(Float, nullable=False)
-    predictedProduction = Column(Float, nullable=False)
+    predicted_consumption = Column(Float, nullable=False)
+    predicted_production = Column(Float, nullable=False)

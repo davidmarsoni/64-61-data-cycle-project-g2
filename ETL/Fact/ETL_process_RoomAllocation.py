@@ -20,7 +20,7 @@ from ETL.Dim.DimUser import get_or_create_user
 from ETL.Dim.DimActivity import get_or_create_activity
 from ETL.Dim.DimBookingType import get_or_create_booking_type
 from ETL.Dim.DimDivision import get_or_create_division
-from ETL.Dim.DimClassRoom import get_or_create_classroom
+from ETL.Dim.DimClassroom import get_or_create_classroom
 from config import ensure_installed, Config
 from ETL.db.models import (
     DimDate, DimTime, DimRoom, DimUser, 
@@ -131,7 +131,7 @@ def process_room_allocation_file(session, allocation_df):
         all_booking_types = {}
         for booking_type in session.query(DimBookingType).all():
             key = (booking_type.code, booking_type.bookingType)
-            all_booking_types[key] = booking_type.id_bookingtype
+            all_booking_types[key] = booking_type.id_booking_type # Use updated id_booking_type
         logging.info(f"Preloaded {len(all_booking_types)} booking types")
         
         # Fetch all classrooms from dimension table
@@ -206,15 +206,16 @@ def process_room_allocation_file(session, allocation_df):
                 FactBookings.id_time_end,
                 FactBookings.id_room,
                 FactBookings.id_user,
-                FactBookings.externalId
+                FactBookings.external_id # Use updated external_id
             ).filter(
                 FactBookings.id_date.in_(list(date_set)),
-                FactBookings.isActive == True
+                FactBookings.is_active == True # Use updated is_active
             ).all()
             
             for booking in booking_query:
-                if booking.externalId:
-                    active_reservations[booking.externalId] = booking.id_booking
+                # Use external_id for the key if it exists, otherwise skip
+                if booking.external_id:
+                    active_reservations[booking.external_id] = booking.id_booking
                     
             logging.info(f"Found {len(active_reservations)} active reservations in database")
         
@@ -226,7 +227,7 @@ def process_room_allocation_file(session, allocation_df):
             FactBookings.id_time_end,
             FactBookings.id_room,
             FactBookings.id_user
-        ).filter(FactBookings.isActive == True).all():
+        ).filter(FactBookings.is_active == True).all(): # Use updated is_active
             existing_records.add((
                 record.id_date, 
                 record.id_time_start,
@@ -378,21 +379,22 @@ def process_room_allocation_file(session, allocation_df):
                     continue
                 
                 # Add to batch for insertion
-                records_to_insert.append({
+                # Convert the FactBookings object attributes to a dictionary for bulk_insert_mappings
+                booking_data = {
                     'id_date': date_id,
                     'id_time_start': time_start_id,
                     'id_time_end': time_end_id,
                     'id_room': room_id,
                     'id_user': user_id,
                     'id_professor': professor_id,
-                    'id_activity': activity_id,
-                    'id_bookingtype': booking_type_id,
-                    'id_division': division_id,
                     'id_classroom': classroom_id,
-                    'isActive': True,
-                    'lastModified': datetime.now(),
-                    'externalId': reservation_externalId
-                })
+                    'id_booking_type': booking_type_id,
+                    'id_division': division_id,
+                    'id_activity': activity_id,
+                    'is_active': True,
+                    'external_id': reservation_externalId
+                }
+                records_to_insert.append(booking_data) # Append the dictionary, not the object
                 stats['inserted'] += 1
                 
                 # Add to existing records to prevent future duplicates
@@ -401,7 +403,7 @@ def process_room_allocation_file(session, allocation_df):
                 # Batch commit
                 if len(records_to_insert) >= batch_size:
                     try:
-                        session.bulk_insert_mappings(FactBookings, records_to_insert)
+                        session.bulk_insert_mappings(FactBookings, records_to_insert) # Pass the list of dictionaries
                         session.commit()
                         logging.info(f"Committed batch of {len(records_to_insert)} records (total processed: {stats['processed']})")
                         records_to_insert = []
@@ -409,7 +411,7 @@ def process_room_allocation_file(session, allocation_df):
                         error_trace = traceback.format_exc()
                         log_error("Batch Commit", f"Error during batch commit: {batch_error}", error_trace)
                         session.rollback()
-                        records_to_insert = []
+                        records_to_insert = [] # Clear batch on error
                 
             except Exception as row_error:
                 error_trace = traceback.format_exc()
@@ -419,7 +421,7 @@ def process_room_allocation_file(session, allocation_df):
         # Commit any remaining rows in the final batch
         if records_to_insert:
             try:
-                session.bulk_insert_mappings(FactBookings, records_to_insert)
+                session.bulk_insert_mappings(FactBookings, records_to_insert) # Pass the list of dictionaries
                 session.commit()
                 logging.info(f"Committed final batch of {len(records_to_insert)} records")
             except Exception as batch_error:
@@ -441,20 +443,17 @@ def process_room_allocation_file(session, allocation_df):
             # Deactivate reservations in batches
             deactivate_batch_size = 500
             for i in range(0, len(reservations_to_deactivate), deactivate_batch_size):
-                batch = reservations_to_deactivate[i:i + deactivate_batch_size]
+                batch_ids = reservations_to_deactivate[i:i + deactivate_batch_size]
                 try:
                     session.query(FactBookings).filter(
-                        FactBookings.id_booking.in_(batch)
-                    ).update(
-                        {FactBookings.isActive: False, FactBookings.lastModified: datetime.now()},
-                        synchronize_session=False
-                    )
+                        FactBookings.id_booking.in_(batch_ids)
+                    ).update({FactBookings.is_active: False}, synchronize_session=False) # Use updated is_active
                     session.commit()
-                    stats['deactivated'] += len(batch)
-                    logging.info(f"Deactivated batch of {len(batch)} reservations")
-                except Exception as e:
+                    stats['deactivated'] += len(batch_ids)
+                    logging.info(f"Deactivated batch of {len(batch_ids)} reservations")
+                except Exception as deactivate_error:
                     error_trace = traceback.format_exc()
-                    log_error("Deactivation Error", f"Error deactivating reservations: {str(e)}", error_trace)
+                    log_error("Deactivation Batch Commit", f"Error during deactivation batch commit: {deactivate_error}", error_trace)
                     session.rollback()
         
         # Log statistics for this file
