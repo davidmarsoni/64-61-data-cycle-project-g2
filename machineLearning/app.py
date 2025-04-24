@@ -22,25 +22,24 @@ swaggerui_blueprint = get_swaggerui_blueprint(
 )
 app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
-
-
 @app.route('/static/<path:path>')
 def send_static(path):
     return send_from_directory('static', path)
 
-# Load model
-model_path = 'models/pred_only_model_pac_2025-03-25_13-21-18.pkl'  
+
+model_path = 'models/pred_only_model_hourly_2025-03-26_21-06-25.pkl'  # Update the path
 
 try:
     with open(model_path, 'rb') as f:
         model_info = pickle.load(f)
     print(f"Loaded model from {model_path}")
     print(f"Model features: {model_info['features']}")
+    print(f"Model R² score: {model_info.get('metrics', {}).get('R2', 'unknown')}")
 except Exception as e:
     print(f"Error loading model: {e}")
     model_info = None
 
-@app.route('/predict', methods=['POST'])
+@app.route('/predictProduction', methods=['POST'])
 def predict():
     if model_info is None:
         return jsonify({'error': 'Model not loaded'}), 500
@@ -81,20 +80,29 @@ def predict():
         # Convert date and time columns to datetime if they exist
         if 'date' in data.columns and 'time' in data.columns:
             data['datetime'] = pd.to_datetime(data['date'] + ' ' + data['time'])
-            data = data.set_index('datetime')
         elif 'datetime' in data.columns:
             data['datetime'] = pd.to_datetime(data['datetime'])
-            data = data.set_index('datetime')
+        
+        # Ensure datetime is the index for time feature extraction
+        if 'datetime' in data.columns:
+            if not isinstance(data.index, pd.DatetimeIndex):
+                data = data.set_index('datetime')
+        else:
+            return jsonify({'error': 'No datetime information found in data'}), 400
         
         # Add time-based features
+        data['hour'] = data.index.hour  # Explicitly add hour column
         data['hour_sin'] = np.sin(2 * np.pi * data.index.hour / 24)
         data['hour_cos'] = np.cos(2 * np.pi * data.index.hour / 24)
         data['day_of_year'] = data.index.dayofyear / 365.0
         
-        # Ensure all required features are available
-        for feature in model_info['features']:
-            if feature not in data.columns and feature not in ['hour_sin', 'hour_cos', 'day_of_year']:
-                return jsonify({'error': f'Missing required feature: {feature}'}), 400
+        # Check if all required features are available
+        missing_features = [f for f in model_info['features'] if f not in data.columns]
+        if missing_features:
+            return jsonify({
+                'error': f'Missing required features: {missing_features}',
+                'available_columns': data.columns.tolist()
+            }), 400
         
         # Select only the features used by the model
         X_pred = data[model_info['features']].copy()
@@ -121,11 +129,14 @@ def predict():
             'model_info': {
                 'training_date': model_info.get('training_date', 'unknown'),
                 'model_type': model_info.get('model_type', 'unknown'),
-                'metrics': model_info.get('metrics', {})
+                'metrics': model_info.get('metrics', {}),
+                'r2_score': model_info.get('metrics', {}).get('R2', 'unknown')
             }
         })
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f'Error during prediction: {str(e)}'}), 500
     
 def process_prediction_data(data):
@@ -190,7 +201,35 @@ def get_model_info():
         'features': model_info['features'],
         'training_date': model_info.get('training_date', 'unknown'),
         'model_type': model_info.get('model_type', 'unknown'),
-        'metrics': model_info.get('metrics', {})
+        'performance': {
+            'r2_score': model_info.get('metrics', {}).get('R2', 'unknown'),
+            'rmse': model_info.get('metrics', {}).get('RMSE', 'unknown'),
+            'mae': model_info.get('metrics', {}).get('MAE', 'unknown')
+        },
+        'feature_importance': model_info.get('feature_importance', {}).to_dict() if hasattr(model_info.get('feature_importance', {}), 'to_dict') else None
+    })
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Simple route to check that the API is operational"""
+    return jsonify({
+        'status': 'ok',
+        'model_loaded': model_info is not None,
+        'model_r2': model_info.get('metrics', {}).get('R2', 'unknown') if model_info else None
+    })
+
+@app.route('/', methods=['GET'])
+def home():
+    """Home page with API information"""
+    return jsonify({
+        'name': 'Solar Production Prediction API',
+        'description': 'API for predicting solar production based on weather forecasts',
+        'endpoints': {
+            '/predict': 'POST - Make a prediction',
+            '/model-info': 'GET - Get information about the model',
+            '/health': 'GET - Check the API status',
+            '/api/docs': 'GET - Swagger documentation'
+        }
     })
 
 if __name__ == '__main__':
