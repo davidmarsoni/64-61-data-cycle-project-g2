@@ -1,4 +1,4 @@
-# Solar Energy Production Prediction Model - Amélioré
+# Solar Energy Production Prediction Model
 # ------------------------------------------------------------------------
 # This model predicts solar panel energy production based on weather forecasts.
 # Simplified version with improved performance, using only MIN and PRED files.
@@ -713,10 +713,9 @@ def predict_with_saved_model(model_path, pred_data):
         return predictions
     
 if __name__ == "__main__":
-    # Date des données à utiliser pour l'entraînement
-    data_date = '2025-03-14'  # Changez la date selon vos besoins
+    data_date = '2025-04-04'  # Change date if needed
     
-    # Entraîner le modèle
+    # Train model
     results = train_solar_pred_model(data_date=data_date, save_outputs=True)
     
     if results:
@@ -734,16 +733,15 @@ if __name__ == "__main__":
         if results['pred_path']:
             print(f"Predictions saved to: {results['pred_path']}")
         
-        # Afficher les caractéristiques les plus importantes
+        
         importance_df = results['model_info']['feature_importance']
         print("\nTop feature importance:")
         print(importance_df.head(3))
         
-        # Tester le modèle sur des données de prédiction futures
+        
         print("\nSimulating prediction on future data...")
         
-        # Exemple - utilisez votre propre fichier de prédiction si disponible
-        # future_preds = predict_with_saved_model(results['model_path'], 'path/to/future_pred_data.csv')
+    
         
         print("\nReady for deployment to API.")
     else:
