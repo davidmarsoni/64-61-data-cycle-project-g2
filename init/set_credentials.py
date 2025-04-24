@@ -28,12 +28,13 @@ def set_credentials_from_env():
     
     # Email credentials for Gmail
     email_username = os.getenv("GOOGLE_EMAIL_SENDER")
-    email_password = os.getenv("GOOGLE_EMAIL_PASSWORD")
+    # Check for both possible env variable names to ensure compatibility
+    email_password = os.getenv("APP_PASSWORD_GOOGLE_PASSWORD") or os.getenv("GOOGLE_EMAIL_PASSWORD")
     
     # Verify that all required credentials are present
     if not all([username, password, email_username, email_password]):
         print("❌ Required credentials are not all defined in the .env file")
-        print("Make sure DATA_USERNAME, DATA_PASSWORD, GOOGLE_EMAIL_SENDER and GOOGLE_EMAIL_PASSWORD are defined.")
+        print("Make sure DATA_USERNAME, DATA_PASSWORD, GOOGLE_EMAIL_SENDER and APP_PASSWORD_GOOGLE_PASSWORD (or GOOGLE_EMAIL_PASSWORD) are defined.")
         return 1
     
     # === DEFINE YOUR NON-SENSITIVE PARAMETERS FOR THE NEW .ENV FILE ===

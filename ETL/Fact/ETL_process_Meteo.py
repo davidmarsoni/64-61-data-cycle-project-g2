@@ -104,27 +104,25 @@ def process_meteo_files(session, meteo_folder):
         logging.info(f"Found {len(pred_files)} files to process")
         
         # Preload all dimension data to reduce database queries
-        # We need to join with the actual dimension tables to get the needed attributes
         logging.info("Preloading dimension data...")
         
-        # Fetch all dates from dimension table - fix attribute names to match schema
+        # Fetch all dates from dimension table 
         all_dates = {}
         for date in session.query(DimDate).all():
             date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
             all_dates[date_str] = date.id_date
         logging.info(f"Preloaded {len(all_dates)} dates")
         
-        # Fetch all times from dimension table - fix attribute names to match schema
+        # Fetch all times from dimension table
         all_times = {}
         for time in session.query(DimTime).all():
             time_str = f"{time.hour:02d}:{time.minute:02d}:00"
             all_times[time_str] = time.id_time
         logging.info(f"Preloaded {len(all_times)} times")
         
-        # Fetch all sites from dimension table - fix attribute names to match schema
+        # Fetch all sites from dimension table
         all_sites = {}
         for site in session.query(DimSite).all():
-            # Assuming site has a name attribute - adjust if it's called something different
             all_sites[site.siteName] = site.id_site
         logging.info(f"Preloaded {len(all_sites)} sites")
         

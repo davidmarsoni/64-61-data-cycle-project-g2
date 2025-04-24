@@ -160,7 +160,7 @@ def process_energy_files(session, consumption_df, temp_df, humidity_df):
                 records_to_insert.append({
                     'id_date': date_id,
                     'id_time': time_id,
-                    'energy_consumed': float(row['Value']),
+                    'energy_consumed': float(row['Value']), # Use updated energy_consumed
                     'temperature': float(temperature),
                     'humidity': float(humidity)
                 })
@@ -225,7 +225,17 @@ def populate_dim_tables_and_facts():
     setup_logging("Energy Consumption ETL")
     logging.info("Starting Energy Consumption ETL process")
     
-    # First ensure tables exist
+    # Check for files first before attempting any database operations
+    organized_files = get_files_by_category()
+    
+    # If the directory is empty, log an error and exit
+    if not organized_files or not any(organized_files.values()):
+        log_error("File Search", "No files found in the directory")
+        send_error_summary("Energy Consumption ETL")
+        logging.info("Energy Consumption ETL process completed without processing any files")
+        return
+    
+    # Now that we know files exist, proceed with database initialization
     try:
         init_db()
     except Exception as e:
@@ -241,7 +251,6 @@ def populate_dim_tables_and_facts():
         return
     
     try:
-        organized_files = get_files_by_category()
         total_stats = {'processed': 0, 'inserted': 0, 'duplicates': 0, 'invalid': 0}
         
         for main_folder, categories in organized_files.items():
@@ -272,8 +281,6 @@ def populate_dim_tables_and_facts():
                     temp_df = pd.read_csv(temp_file)
                     humidity_df = pd.read_csv(humidity_file)
                     
-                   
-                    
                     # Process the files
                     file_stats = process_energy_files(session, consumption_df, temp_df, humidity_df)
                     
@@ -287,23 +294,28 @@ def populate_dim_tables_and_facts():
                     log_error("File Processing", f"Error processing file {consumption_file}: {str(e)}", error_trace)
                     continue
         
-        logging.info("=== Final Summary ===")
-        logging.info(f"Total Processed: {total_stats['processed']}")
-        logging.info(f"Total Inserted: {total_stats['inserted']}")
-        logging.info(f"Total Duplicates: {total_stats['duplicates']}")
-        logging.info(f"Total Invalid: {total_stats['invalid']}")
-        logging.info("===================")
+        # Only show summary if files were processed
+        if total_stats['processed'] > 0:
+            logging.info("=== Final Summary ===")
+            logging.info(f"Total Processed: {total_stats['processed']}")
+            logging.info(f"Total Inserted: {total_stats['inserted']}")
+            logging.info(f"Total Duplicates: {total_stats['duplicates']}")
+            logging.info(f"Total Invalid: {total_stats['invalid']}")
+            logging.info("===================")
         
     except Exception as e:
         error_trace = traceback.format_exc()
         log_error("ETL Process", f"ETL Error: {str(e)}", error_trace)
-        session.rollback()
+        if session:
+            session.rollback()
     finally:
-        session.close()
+        if session:
+            session.close()
         
         # Send error summary if there were any errors
         send_error_summary("Energy Consumption ETL")
         
+        # Log completion message
         logging.info("Energy Consumption ETL process completed")
 
 if __name__ == "__main__":

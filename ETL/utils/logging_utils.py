@@ -47,16 +47,26 @@ def send_error_summary(module_name="ETL Process"):
     # Get the first error's traceback for detailed information
     first_traceback = error_log[0].get('traceback', None) if error_log else None
     
+    # Ensure Config is initialized before sending email
     try:
-        Config.send_error_email(
-            module_name=module_name,
-            subject=f"{module_name} Errors ({len(error_log)} issues)",
-            error_message=summary_msg,
-            traceback_info=first_traceback
-        )
+        # Make sure Config has been set up - use 'etl' as file_type
+        if not Config.GMAIL_PASSWORD:
+            logging.info("Initializing Config for email notifications")
+            Config.load_credentials()
+    except Exception as e:
+        logging.error(f"Failed to initialize Config for email: {str(e)}")
+    
+    # Send the email and check the result
+    success = Config.send_error_email(
+        module_name=module_name,
+        subject=f"{module_name} Errors ({len(error_log)} issues)",
+        error_message=summary_msg,
+        traceback_info=first_traceback
+    )
+    
+    # Only log success if the email was actually sent
+    if success:
         logging.info("Error summary email sent successfully.")
-    except Exception as email_error:
-        logging.error(f"Failed to send error summary email: {email_error}")
 
 def setup_logging(module_name="ETL"):
     """Configure logging for the ETL process
@@ -64,6 +74,13 @@ def setup_logging(module_name="ETL"):
     Args:
         module_name (str, optional): Name of the module for log identification. Defaults to "ETL".
     """
+    # Initialize Config for ETL
+    try:
+        Config.setup("etl")
+    except Exception as e:
+        # Just set up basic logging if Config setup fails
+        print(f"Warning: Config setup failed: {e}")
+        
     # Create a more structured log directory path
     base_log_dir = Config.LOG_DIR
     etl_log_dir = os.path.join(base_log_dir, "ETL")

@@ -39,6 +39,12 @@ from dotenv import load_dotenv
 ensure_installed('keyring')
 import keyring
 
+# Ensure chardet is installed for file encoding detection
+ensure_installed('chardet')
+
+# Ensure pandas is installed for data manipulation
+ensure_installed('pandas')
+
 # Load environment variables from .env file (for non-sensitive config)
 load_dotenv()
 
@@ -163,15 +169,39 @@ class Config:
             if cls.PASSWORD and os.getenv('DATA_PASSWORD'):
                 logging.info("Using password from .env file. Consider storing it in Windows Credential Manager for better security.")
         
-        # Get email credentials
-        email = cls.GMAIL_SENDER
-        if email:
-            cls.GMAIL_PASSWORD = CredentialManager.get_credential(email, 'APP_PASSWORD_GOOGLE_PASSWORD')
-            
-            # If using from .env file, offer to save to Windows Credential Manager
-            if cls.GMAIL_PASSWORD and os.getenv('APP_PASSWORD_GOOGLE_PASSWORD'):
-                logging.info("Using email password from .env file. Consider storing it in Windows Credential Manager for better security.")
+        # Load email configuration
+        cls.GMAIL_SENDER = os.getenv('GOOGLE_EMAIL_SENDER')
+        cls.GMAIL_RECIPIENT = os.getenv('GOOGLE_EMAIL_DESTINATOR')
         
+        # Check for email credentials
+        if cls.GMAIL_SENDER:
+            # Try to get password from Credential Manager first
+            cls.GMAIL_PASSWORD = CredentialManager.get_credential(cls.GMAIL_SENDER, None)
+            
+            # If not found in credential manager, try both possible environment variable names
+            if cls.GMAIL_PASSWORD is None:
+                possible_env_vars = ['APP_PASSWORD_GOOGLE_PASSWORD', 'GOOGLE_EMAIL_PASSWORD', 'GMAIL_PASSWORD']
+                for env_var in possible_env_vars:
+                    password = os.getenv(env_var)
+                    if password:
+                        cls.GMAIL_PASSWORD = password
+                        logging.info(f"Using email password from {env_var} environment variable.")
+                        # Store it in credential manager for next time
+                        if CredentialManager.set_credential(cls.GMAIL_SENDER, cls.GMAIL_PASSWORD):
+                            logging.info(f"Email credentials for '{cls.GMAIL_SENDER}' have been saved to the Windows Credential Manager.")
+                        break
+                
+            # Log status of email configuration
+            if cls.GMAIL_PASSWORD:
+                logging.info("Email credentials loaded successfully.")
+            else:
+                logging.warning("Email password not found. Email notifications will be disabled.")
+                
+        elif cls.GMAIL_RECIPIENT:
+            logging.warning("Email recipient is set but sender email is missing. Email notifications will be disabled.")
+        else:
+            logging.info("Email configuration not provided. Email notifications will be disabled.")
+    
     @classmethod
     def setup_logging(cls, module_name):
         """
@@ -254,10 +284,18 @@ class Config:
             error_message: Main error message
             traceback_info: Optional traceback information
         """
+        # Add detailed logging to identify which email configuration parameters are missing
+        if not cls.GMAIL_SENDER:
+            logging.error("Email notification failed: Missing GMAIL_SENDER")
+        if not cls.GMAIL_PASSWORD:
+            logging.error("Email notification failed: Missing GMAIL_PASSWORD")
+        if not cls.GMAIL_RECIPIENT:
+            logging.error("Email notification failed: Missing GMAIL_RECIPIENT")
+            
         # Check if email configuration is available
         if not all([cls.GMAIL_SENDER, cls.GMAIL_PASSWORD, cls.GMAIL_RECIPIENT]):
-            logging.error("Email configuration is missing. Cannot send error notification.")
-            return
+            logging.warning("Email notification skipped: Missing email configuration.")
+            return False
         
         try:
             msg = MIMEMultipart()
@@ -295,6 +333,8 @@ class Config:
                 server.send_message(msg)
             
             logging.info("Error notification email sent successfully")
+            return True
             
         except Exception as e:
             logging.error(f"Failed to send error email: {e}")
+            return False

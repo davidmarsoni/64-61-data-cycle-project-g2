@@ -71,7 +71,7 @@ Before running any step of the project, you need to configure the creidentials u
 
 > Make sure to have the `.env` file in the root of the project before running this script. and also make sure to have the `python` installed on your machine.
 
-## Run of the project
+## Run of the project manually
 
 To run the project locally or scheduled on a server you need to respect the following steps:
 
@@ -93,15 +93,38 @@ python data_cleaner.py
 
 3. Populate the database
 
+To populate the database, you need to run the script `setup_database.py` in the init folder to create the database and the tables. This script will also populate the database with the cleaned data.
+
+```bash
+python init/setup_database.py
+```
+
+> Note: This script as 2 mode one safe that will only try to create the database and the tables and one that have the `--force` option that will later on durring the launch of the script let you choose to drop the database and recreate it. **This is not recommended to use this option if you are not sure of what you are doing.**
+
+4. Run the ETL process
+
 Once the data is cleaned, you can run the script `data_ETL.py` to transform and populate the data into the database. This script will use the cleaned data and store it in the database.
 
 ```bash
 python data_ETL.py
 ```
 
-> Make sure to have the database running and the credentials set in the `.env` file before running this script. The database need also to be created before using the `galaxy_schema_creation_script.py` script.
-
-4. Open the dashboard
+5. Open the dashboard
 
 Open the powerbi dashboard with the .pbix file in the `dashboard` folder. You can use the Power BI Desktop application to open the file and connect to the database. The dashboard is already configured to connect to the database.
 
+## Run the project automatically
+
+To make this project run automatically, you just need to first fill the `.env` file with the credentials and then run the 'set_credentials.py' script to set the credentials in the database.
+
+Then you need to run the database setup script to create the database and the tables. This script will also populate the database with the cleaned data.
+
+```bash
+python init/setup_database.py --force
+```
+
+After that you can just run the 'scheduler.bat' inside the `init` folder. This script will create a schedule task that will run the laucher.bat script every day at 7:30. This script will run the data collector, data cleaner, and data ETL scripts in order to collect, clean, and populate the data into the database each day.
+
+```bash
+scheduler.bat
+```

@@ -1,576 +1,563 @@
-"""
-ETL script to populate the FactBookings table and related dimensions
-using SQLAlchemy ORM.
-"""
-
+# Required library imports
 import os
-import re
+import sys
 import pandas as pd
-import numpy as np
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-from dotenv import load_dotenv
 import logging
-import glob
 import traceback
+from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("room_allocation_etl.log"),
-        logging.StreamHandler()
-    ]
+# Add parent directory to path to make ETL a proper package import
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
+from ETL.db.base import get_session, init_db
+from ETL.db.models import FactBookings
+from ETL.Dim.DimDate import get_or_create_date
+from ETL.Dim.DimTime import get_or_create_time
+from ETL.Dim.DimRoom import get_or_create_room
+from ETL.Dim.DimUser import get_or_create_user
+from ETL.Dim.DimActivity import get_or_create_activity
+from ETL.Dim.DimBookingType import get_or_create_booking_type
+from ETL.Dim.DimDivision import get_or_create_division
+from ETL.Dim.DimClassroom import get_or_create_classroom
+from config import ensure_installed, Config
+from ETL.db.models import (
+    DimDate, DimTime, DimRoom, DimUser, 
+    DimActivity, DimBookingType, DimDivision, DimClassroom
 )
-logger = logging.getLogger(__name__)
+  
+# Ensure required packages are installed
+ensure_installed('pandas')
+ensure_installed('sqlalchemy')
 
-# Load environment variables
-load_dotenv()
+SUBFOLDERS = {
+    "BellevueBooking": "RoomAllocations",
+}
 
-# Global configuration
-BASE_DIR = os.getenv('BASE_DIR', 'C:\\DataCollection')
-current_date = datetime.now().strftime('%Y-%m-%d')
-CLEAN_DATA_DIR = os.path.join(BASE_DIR, f"cleaned_data_{current_date}")
-BOOKING_DATA_DIR = os.path.join(CLEAN_DATA_DIR, "BellevueBooking")
-
-# Database connection
-SERVER = os.getenv('DB_SERVER', '.')
-DATABASE = os.getenv('DB_NAME', 'data_cycle_db')
-CONNECTION_STRING = f'mssql+pyodbc://{SERVER}/{DATABASE}?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes'
-
-# SQLAlchemy setup
-Base = declarative_base()
-
-# Define ORM models matching the database schema
-class DimDate(Base):
-    __tablename__ = 'DimDate'
+def get_files_by_category():
+    """Get all CSV files organized by category"""
+    files_by_category = {}
     
-    id_date = Column(Integer, primary_key=True, autoincrement=True)
-    year = Column(Integer, nullable=False)
-    month = Column(Integer, nullable=False)
-    day = Column(Integer, nullable=False)
-
-class DimTime(Base):
-    __tablename__ = 'DimTime'
-    
-    id_time = Column(Integer, primary_key=True, autoincrement=True)
-    hour = Column(Integer, nullable=False)
-    minute = Column(Integer, nullable=False)
-
-class DimRoom(Base):
-    __tablename__ = 'DimRoom'
-    
-    id_room = Column(Integer, primary_key=True, autoincrement=True)
-    roomName = Column(String(255), nullable=False)
-class DimUser(Base):
-    __tablename__ = 'DimUser'
-    
-    id_user = Column(Integer, primary_key=True, autoincrement=True)
-    userName = Column(String(255), nullable=False)
-
-class DimActivity(Base):
-    __tablename__ = 'DimActivity'
-    
-    id_activity = Column(Integer, primary_key=True, autoincrement=True)
-    activityName = Column(String(255), nullable=False)
-
-class DimBookingType(Base):
-    __tablename__ = 'DimBookingType'
-    
-    id_bookingType = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(50), nullable=False)
-    bookingType = Column(String(100), nullable=False)
-
-class DimDivision(Base):
-    __tablename__ = 'DimDivision'
-    
-    id_division = Column(Integer, primary_key=True, autoincrement=True)
-    divisionName = Column(String(255), nullable=False)
-
-class FactBookings(Base):
-    __tablename__ = 'FactBookings'
-    
-    id_booking = Column(Integer, primary_key=True, autoincrement=True)
-    id_date = Column(Integer, ForeignKey('DimDate.id_date'), nullable=False)
-    id_time_start = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    id_time_end = Column(Integer, ForeignKey('DimTime.id_time'), nullable=False)
-    id_room = Column(Integer, ForeignKey('DimRoom.id_room'), nullable=False)
-    id_user = Column(Integer, ForeignKey('DimUser.id_user'), nullable=False)
-    id_professor = Column(Integer, ForeignKey('DimUser.id_user'), nullable=True)
-    id_bookingType = Column(Integer, ForeignKey('DimBookingType.id_bookingType'), nullable=False)
-    id_division = Column(Integer, ForeignKey('DimDivision.id_division'), nullable=True)
-    id_activity = Column(Integer, ForeignKey('DimActivity.id_activity'), nullable=True)
-
-class RoomAllocationETL:
-    """ETL process for room allocation data"""
-    
-    def __init__(self):
-        """Initialize the ETL process"""
-        self.engine = create_engine(CONNECTION_STRING)
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
+    if not Config.CLEAN_DATA_DIR or not os.path.exists(Config.CLEAN_DATA_DIR):
+        log_error("File Search", f"Directory does not exist: {Config.CLEAN_DATA_DIR}")
+        return files_by_category
         
-        # Caches for dimension lookups
-        self.date_cache = {}
-        self.time_cache = {}
-        self.room_cache = {}
-        self.user_cache = {}
-        self.activity_cache = {}
-        self.booking_type_cache = {}
-        self.division_cache = {}
+    # List all folders in the cleaned_data directory to find the most recent one
+    data_folders = [f for f in os.listdir(Config.BASE_DIR) if f.startswith('cleaned_data_')]
+    if not data_folders:
+        log_error("File Search", "No cleaned_data folders found")
+        return files_by_category
         
-        # Pre-load dimension caches
-        self._preload_dimensions()
+    # Get the most recent data folder
+    latest_data_folder = sorted(data_folders)[-1]
+    actual_data_dir = os.path.join(Config.BASE_DIR, latest_data_folder)
+    
+    logging.info(f"Using data folder: {actual_data_dir}")
+    
+    # Process BellevueBooking folder
+    main_folder_path = os.path.join(actual_data_dir, "BellevueBooking")
+    if not os.path.exists(main_folder_path):
+        log_error("File Search", f"Main folder path does not exist: {main_folder_path}")
+        return files_by_category
+        
+    files_by_category["BellevueBooking"] = {}
+    
+    # Get all CSV files for room allocations
+    for f in os.listdir(main_folder_path):
+        if f.endswith('.csv'):
+            category = SUBFOLDERS["BellevueBooking"]
+            if category not in files_by_category["BellevueBooking"]:
+                files_by_category["BellevueBooking"][category] = []
+            files_by_category["BellevueBooking"][category].append(os.path.join(main_folder_path, f))
+            logging.info(f"Found {category} file: {f}")
+    
+    return files_by_category
 
-    def _preload_dimensions(self):
-        """Pre-load dimension tables to minimize database queries"""
-        logger.info("Pre-loading dimension data...")
+def validate_room_allocation_row(room_name, date_val, start_time, end_time, user_name):
+    """Validate a single row of room allocation data"""
+    try:
+        # Check if all required values exist
+        required_fields = [room_name, date_val, start_time, end_time, user_name]
+        if any(val is None or pd.isna(val) for val in required_fields):
+            return False, "Missing required values"
         
-        # Load dates
-        for date_row in self.session.query(DimDate).all():
-            date_key = f"{date_row.year}-{date_row.month:02d}-{date_row.day:02d}"
-            self.date_cache[date_key] = date_row.id_date
-            
-        # Load times
-        for time_row in self.session.query(DimTime).all():
-            time_key = f"{time_row.hour:02d}:{time_row.minute:02d}"
-            self.time_cache[time_key] = time_row.id_time
-            
-        # Load rooms
-        for room_row in self.session.query(DimRoom).all():
-            self.room_cache[room_row.roomName] = room_row.id_room
-            
-        # Load users
-        for user_row in self.session.query(DimUser).all():
-            self.user_cache[user_row.userName.lower()] = user_row.id_user
-            
-        # Load activities
-        for activity_row in self.session.query(DimActivity).all():
-            self.activity_cache[activity_row.activityName.lower()] = activity_row.id_activity
-            
-        # Load booking types
-        for booking_type_row in self.session.query(DimBookingType).all():
-            self.booking_type_cache[(booking_type_row.code, booking_type_row.bookingType)] = booking_type_row.id_bookingType
-            
-        # Load divisions
-        for division_row in self.session.query(DimDivision).all():
-            self.division_cache[division_row.divisionName.lower()] = division_row.id_division
-        
-        logger.info(f"Loaded {len(self.date_cache)} dates, {len(self.time_cache)} times, "
-                   f"{len(self.room_cache)} rooms, {len(self.user_cache)} users, "
-                   f"{len(self.activity_cache)} activities, {len(self.booking_type_cache)} booking types, "
-                   f"{len(self.division_cache)} divisions")
+        return True, "Valid"
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
 
-    def get_or_create_date_id(self, date_obj):
-        """Get or create date dimension entry"""
-        date_str = date_obj.strftime('%Y-%m-%d')
+def process_room_allocation_file(session, allocation_df):
+    """Process room allocation file and insert into database using ORM"""
+    try:
+        # Add tracking for deactivated reservations
+        stats = {'processed': 0, 'inserted': 0, 'duplicates': 0, 'invalid': 0, 'deactivated': 0}
         
-        if date_str in self.date_cache:
-            return self.date_cache[date_str]
-            
-        # Check if date exists in database
-        date_entry = self.session.query(DimDate).filter_by(
-            year=date_obj.year, 
-            month=date_obj.month, 
-            day=date_obj.day
-        ).first()
+        # Preload all dimension data to reduce database queries
+        logging.info("Preloading dimension data...")
         
-        if date_entry:
-            self.date_cache[date_str] = date_entry.id_date
-            return date_entry.id_date
-            
-        # Create new date
-        new_date = DimDate(
-            year=date_obj.year,
-            month=date_obj.month,
-            day=date_obj.day
-        )
-        self.session.add(new_date)
-        self.session.flush()  # Get the generated ID
+        # Fetch all dates from dimension table
+        all_dates = {}
+        for date in session.query(DimDate).all():
+            date_str = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+            all_dates[date_str] = date.id_date
+        logging.info(f"Preloaded {len(all_dates)} dates")
         
-        self.date_cache[date_str] = new_date.id_date
-        return new_date.id_date
+        # Fetch all times from dimension table
+        all_times = {}
+        for time in session.query(DimTime).all():
+            time_str = f"{time.hour:02d}:{time.minute:02d}:00"
+            all_times[time_str] = time.id_time
+        logging.info(f"Preloaded {len(all_times)} times")
         
-    def get_or_create_time_id(self, time_str):
-        """Get or create time dimension entry"""
-        # Convert to HH:MM format (drop seconds if present)
-        if ':' in time_str:
-            if len(time_str.split(':')) > 1:
-                hour, minute = time_str.split(':')[:2]
-                time_key = f"{int(hour):02d}:{int(minute):02d}"
-            else:
-                hour = time_str.split(':')[0]
-                time_key = f"{int(hour):02d}:00"
+        # Fetch all rooms from dimension table
+        all_rooms = {}
+        for room in session.query(DimRoom).all():
+            all_rooms[room.roomName] = room.id_room
+        logging.info(f"Preloaded {len(all_rooms)} rooms")
+        
+        # Fetch all users from dimension table
+        all_users = {}
+        for user in session.query(DimUser).all():
+            all_users[user.userName.lower()] = user.id_user
+        logging.info(f"Preloaded {len(all_users)} users")
+        
+        # Fetch all activities from dimension table
+        all_activities = {}
+        for activity in session.query(DimActivity).all():
+            all_activities[activity.activityName.lower()] = activity.id_activity
+        logging.info(f"Preloaded {len(all_activities)} activities")
+        
+        # Fetch all booking types from dimension table
+        all_booking_types = {}
+        for booking_type in session.query(DimBookingType).all():
+            key = (booking_type.code, booking_type.bookingType)
+            all_booking_types[key] = booking_type.id_booking_type # Use updated id_booking_type
+        logging.info(f"Preloaded {len(all_booking_types)} booking types")
+        
+        # Fetch all classrooms from dimension table
+        all_classrooms = {}
+        for classroom in session.query(DimClassroom).all():
+            all_classrooms[classroom.classroomName.lower()] = classroom.id_classroom
+        logging.info(f"Preloaded {len(all_classrooms)} classrooms")
+        
+        # Create or ensure a default booking type exists
+        default_booking_type_code = "DEF"
+        default_booking_type_name = "Default"
+        default_key = (default_booking_type_code, default_booking_type_name)
+        
+        if default_key not in all_booking_types:
+            default_booking_type_id = get_or_create_booking_type(session, default_booking_type_code, default_booking_type_name)
+            all_booking_types[default_key] = default_booking_type_id
+            logging.info(f"Created default booking type with ID: {default_booking_type_id}")
         else:
-            # Handle cases where time is given as a number (e.g. "6" for 6:00)
-            time_key = f"{int(time_str):02d}:00"
-            
-        if time_key in self.time_cache:
-            return self.time_cache[time_key]
-            
-        hour, minute = time_key.split(':')
+            logging.info(f"Using existing default booking type with ID: {all_booking_types[default_key]}")
         
-        # Check if time exists
-        time_entry = self.session.query(DimTime).filter_by(
-            hour=int(hour),
-            minute=int(minute)
-        ).first()
+        # Fetch all divisions from dimension table
+        all_divisions = {}
+        for division in session.query(DimDivision).all():
+            all_divisions[division.divisionName.lower()] = division.id_division
+        logging.info(f"Preloaded {len(all_divisions)} divisions")
         
-        if time_entry:
-            self.time_cache[time_key] = time_entry.id_time
-            return time_entry.id_time
-            
-        # Create new time
-        new_time = DimTime(
-            hour=int(hour),
-            minute=int(minute)
-        )
-        self.session.add(new_time)
-        self.session.flush()
+        # =======================================
+        # STEP 1: Create identifiers for all current file reservations
+        # =======================================
+        current_file_reservations = set()
         
-        self.time_cache[time_key] = new_time.id_time
-        return new_time.id_time
-        
-    def get_or_create_room_id(self, room_name):
-        """Get or create room dimension entry"""
-        if room_name in self.room_cache:
-            return self.room_cache[room_name]
-            
-        # Check if room exists
-        room_entry = self.session.query(DimRoom).filter_by(
-            roomName=room_name
-        ).first()
-        
-        if room_entry:
-            self.room_cache[room_name] = room_entry.id_room
-            return room_entry.id_room
-            
-        # Create new room
-        new_room = DimRoom(
-            roomName=room_name,
-        )
-        self.session.add(new_room)
-        self.session.flush()
-        
-        self.room_cache[room_name] = new_room.id_room
-        return new_room.id_room
-        
-    def get_or_create_user_id(self, username):
-        """Get or create user dimension entry"""
-        # Handle None/NaN
-        if pd.isna(username) or username is None or username == '':
-            return None
-            
-        username_lower = username.lower()
-        
-        if username_lower in self.user_cache:
-            return self.user_cache[username_lower]
-            
-        # Check if user exists
-        user_entry = self.session.query(DimUser).filter_by(
-            userName=username
-        ).first()
-        
-        if user_entry:
-            self.user_cache[username_lower] = user_entry.id_user
-            return user_entry.id_user
-            
-        # Create new user
-        new_user = DimUser(
-            userName=username
-        )
-        self.session.add(new_user)
-        self.session.flush()
-        
-        self.user_cache[username_lower] = new_user.id_user
-        return new_user.id_user
-        
-    def get_or_create_activity_id(self, activity):
-        """Get or create activity dimension entry"""
-        # Handle None/NaN
-        if pd.isna(activity) or activity is None or activity == '':
-            return None
-            
-        activity_lower = activity.lower()
-        
-        if activity_lower in self.activity_cache:
-            return self.activity_cache[activity_lower]
-            
-        # Check if activity exists
-        activity_entry = self.session.query(DimActivity).filter_by(
-            activityName=activity
-        ).first()
-        
-        if activity_entry:
-            self.activity_cache[activity_lower] = activity_entry.id_activity
-            return activity_entry.id_activity
-            
-        # Create new activity
-        new_activity = DimActivity(
-            activityName=activity
-        )
-        self.session.add(new_activity)
-        self.session.flush()
-        
-        self.activity_cache[activity_lower] = new_activity.id_activity
-        return new_activity.id_activity
-        
-    def get_or_create_booking_type_id(self, code, booking_type):
-        """Get or create booking type dimension entry"""
-        # Handle None/NaN
-        if pd.isna(code) or code is None:
-            code = "N/A"
-        if pd.isna(booking_type) or booking_type is None:
-            booking_type = "N/A"
-            
-        key = (code, booking_type)
-        
-        if key in self.booking_type_cache:
-            return self.booking_type_cache[key]
-            
-        # Check if booking type exists
-        booking_type_entry = self.session.query(DimBookingType).filter_by(
-            code=code,
-            bookingType=booking_type
-        ).first()
-        
-        if booking_type_entry:
-            self.booking_type_cache[key] = booking_type_entry.id_bookingType
-            return booking_type_entry.id_bookingType
-            
-        # Create new booking type
-        new_booking_type = DimBookingType(
-            code=code,
-            bookingType=booking_type
-        )
-        self.session.add(new_booking_type)
-        self.session.flush()
-        
-        self.booking_type_cache[key] = new_booking_type.id_bookingType
-        return new_booking_type.id_bookingType
-        
-    def get_or_create_division_id(self, division):
-        """Get or create division dimension entry"""
-        # Handle None/NaN
-        if pd.isna(division) or division is None or division == '':
-            return None
-            
-        division_lower = division.lower()
-        
-        if division_lower in self.division_cache:
-            return self.division_cache[division_lower]
-            
-        # Check if division exists
-        division_entry = self.session.query(DimDivision).filter_by(
-            divisionName=division
-        ).first()
-        
-        if division_entry:
-            self.division_cache[division_lower] = division_entry.id_division
-            return division_entry.id_division
-            
-        # Create new division
-        new_division = DimDivision(
-            divisionName=division
-        )
-        self.session.add(new_division)
-        self.session.flush()
-        
-        self.division_cache[division_lower] = new_division.id_division
-        return new_division.id_division
-        
-    def booking_exists(self, date_id, time_start_id, time_end_id, room_id, user_id):
-        """Check if a booking already exists to avoid duplicates"""
-        return self.session.query(FactBookings).filter(
-            FactBookings.id_date == date_id,
-            FactBookings.id_time_start == time_start_id,
-            FactBookings.id_time_end == time_end_id,
-            FactBookings.id_room == room_id,
-            FactBookings.id_user == user_id
-        ).count() > 0
-        
-    def parse_french_date(self, date_str):
-        """Parse French format dates like '8 janv. 2023'"""
-        # French month name mapping
-        french_months = {
-            'janv.': '01', 'févr.': '02', 'mars': '03', 'avr.': '04',
-            'mai': '05', 'juin': '06', 'juil.': '07', 'août': '08',
-            'sept.': '09', 'oct.': '10', 'nov.': '11', 'déc.': '12'
-        }
-        
-        # Handle various date formats
-        try:
-            # Split the date string
-            parts = date_str.split()
-            day = parts[0].zfill(2)  # Ensure day is two digits
-            month = None
-            year = None
-            
-            # Find month and year
-            for part in parts[1:]:
-                if part in french_months:
-                    month = french_months[part]
-                elif part.isdigit() and len(part) == 4:
-                    year = part
-                
-            if day and month and year:
-                # Create datetime object
-                return datetime(int(year), int(month), int(day))
-            else:
-                # Try alternative parsing if components are missing
-                return pd.to_datetime(date_str, format='mixed', dayfirst=True)
-                
-        except Exception as e:
-            # Fall back to pandas date parsing
+        logging.info("Creating identifiers for current file reservations...")
+        for _, row in allocation_df.iterrows():
             try:
-                return pd.to_datetime(date_str, format='mixed', dayfirst=True)
-            except:
-                logger.warning(f"Could not parse date: {date_str}, error: {str(e)}")
-                # If all parsing fails, return today's date
-                return datetime.now()
+                # Extract required fields
+                date_str = row['Date']
+                time_start = row['start_time'] 
+                time_end = row['end_time']
+                room_name = row['room_name']
+                user_name = row['user_name']
+                
+                # Fix missing user_name
+                if pd.isna(user_name):
+                    user_name = "Unknown User"
+                    
+                # Create a unique identifier for this reservation
+                reservation_id = f"{date_str}_{time_start}_{time_end}_{room_name}_{user_name}"
+                current_file_reservations.add(reservation_id)
+                
+            except Exception as e:
+                continue
+                
+        logging.info(f"Found {len(current_file_reservations)} reservations in current file")
+                
+        # =======================================
+        # STEP 2: Get all active reservations from the database for relevant dates
+        # =======================================
+        date_set = set()
+        for date_str in allocation_df['Date'].unique():
+            if not pd.isna(date_str) and date_str in all_dates:
+                date_set.add(all_dates[date_str])
+                
+        logging.info(f"Fetching active reservations for {len(date_set)} dates...")
         
-    def process_room_allocations(self):
-        """Process data from the RoomAllocations files"""
-        try:
-            # Check if data directory exists
-            if not os.path.exists(BOOKING_DATA_DIR):
-                logger.warning(f"BellevueBooking directory not found: {BOOKING_DATA_DIR}")
-                return
-                
-            # Find all room allocation files
-            allocation_files = glob.glob(os.path.join(BOOKING_DATA_DIR, "RoomAllocations_*.csv"))
+        # Query active reservations for these dates
+        active_reservations = {}
+        if date_set:
+            booking_query = session.query(
+                FactBookings.id_booking,
+                FactBookings.id_date,
+                FactBookings.id_time_start,
+                FactBookings.id_time_end,
+                FactBookings.id_room,
+                FactBookings.id_user,
+                FactBookings.external_id # Use updated external_id
+            ).filter(
+                FactBookings.id_date.in_(list(date_set)),
+                FactBookings.is_active == True # Use updated is_active
+            ).all()
             
-            if not allocation_files:
-                logger.warning("No RoomAllocations files found!")
-                return
-                
-            batch_count = 0
-            total_records = 0
-            batch_size = 500  # Commit every 500 records
+            for booking in booking_query:
+                # Use external_id for the key if it exists, otherwise skip
+                if booking.external_id:
+                    active_reservations[booking.external_id] = booking.id_booking
+                    
+            logging.info(f"Found {len(active_reservations)} active reservations in database")
+        
+        # Create a set for duplicate checking
+        existing_records = set()
+        for record in session.query(
+            FactBookings.id_date,
+            FactBookings.id_time_start,
+            FactBookings.id_time_end,
+            FactBookings.id_room,
+            FactBookings.id_user
+        ).filter(FactBookings.is_active == True).all(): # Use updated is_active
+            existing_records.add((
+                record.id_date, 
+                record.id_time_start,
+                record.id_time_end,
+                record.id_room,
+                record.id_user
+            ))
+        
+        # =======================================
+        # STEP 3: Process current reservations and add new ones
+        # =======================================
+        batch_size = 1000
+        records_to_insert = []
+        
+        # Process each row in allocation dataframe
+        for _, row in allocation_df.iterrows():
+            stats['processed'] += 1
             
-            for file_path in allocation_files:
-                logger.info(f"Processing {file_path}")
+            try:
+                # Extract and validate required fields
+                date_str = row['Date']
+                time_start = row['start_time']
+                time_end = row['end_time']
+                room_name = row['room_name']
+                user_name = row['user_name']
                 
-                try:
-                    # Read with encoding detection to handle special characters
-                    df = pd.read_csv(file_path, encoding='utf-8')
+                # Fix missing user_name
+                if pd.isna(user_name):
+                    user_name = "Unknown User"
                     
-                    # Normalize column names - handle common naming variations
-                    column_mapping = {
-                        'room_name': 'room_name',
-                        'Date': 'booking_date',
-                        'start_time': 'start_time',
-                        'end_time': 'end_time',
-                        'reservation_type': 'booking_type',
-                        'codes': 'code',
-                        "user_name": 'username',
-                        'class': 'class_name',
-                        'activity': 'activity',
-                        'professor': 'professor',
-                        'division': 'division'
-                    }
-                    
-                    # Rename columns based on mapping
-                    df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns}, inplace=True)
-                    
-                    # Process each row
-                    for _, row in df.iterrows():
-                        try:
-                            # Parse date - convert from French format
-                            booking_date = self.parse_french_date(row['booking_date'])
-                            
-                            # Get dimension IDs
-                            date_id = self.get_or_create_date_id(booking_date)
-                            time_start_id = self.get_or_create_time_id(str(row['start_time']))
-                            time_end_id = self.get_or_create_time_id(str(row['end_time']))
-                            room_id = self.get_or_create_room_id(row['room_name'])
-                            user_id = self.get_or_create_user_id(row['username'])
-                            
-                            # Skip if missing critical IDs
-                            if None in [date_id, time_start_id, time_end_id, room_id, user_id]:
-                                logger.warning(f"Skipping row with missing critical data: {row.to_dict()}")
-                                continue
-                                
-                            # Get optional dimension IDs
-                            professor_id = self.get_or_create_user_id(row['professor'] if 'professor' in row else None)
-                            activity_id = self.get_or_create_activity_id(row['activity'] if 'activity' in row else None)
-                            division_id = self.get_or_create_division_id(row['division'] if 'division' in row else None)
-                            booking_type_id = self.get_or_create_booking_type_id(
-                                row['code'] if 'code' in row else None,
-                                row['booking_type'] if 'booking_type' in row else None
-                            )
-                            
-                            # Skip if booking already exists
-                            if self.booking_exists(date_id, time_start_id, time_end_id, room_id, user_id):
-                                continue
-                                
-                            # Create new fact record
-                            new_fact = FactBookings(
-                                id_date=date_id,
-                                id_time_start=time_start_id,
-                                id_time_end=time_end_id,
-                                id_room=room_id,
-                                id_user=user_id,
-                                id_professor=professor_id,
-                                id_activity=activity_id,
-                                id_division=division_id,
-                                id_bookingType=booking_type_id
-                            )
-                            self.session.add(new_fact)
-                            
-                            batch_count += 1
-                            total_records += 1
-                            
-                            # Commit in batches
-                            if batch_count >= batch_size:
-                                self.session.commit()
-                                logger.info(f"Committed batch of {batch_count} records, total: {total_records}")
-                                batch_count = 0
-                        except Exception as row_error:
-                            logger.error(f"Error processing row: {str(row_error)}")
-                            logger.debug(f"Problem row: {row.to_dict()}")
-                            continue
-                            
-                except Exception as e:
-                    logger.error(f"Error processing file {file_path}: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    self.session.rollback()
+                # Create unique identifier for tracking
+                reservation_externalId = f"{date_str}_{time_start}_{time_end}_{room_name}_{user_name}"
+                
+                # Skip if already in active reservations
+                if reservation_externalId in active_reservations:
+                    stats['duplicates'] += 1
                     continue
                     
-            # Commit any remaining records
-            if batch_count > 0:
-                self.session.commit()
-                logger.info(f"Committed final batch of {batch_count} records, total: {total_records}")
+                # Extract optional fields
+                professor = row.get('professor')
+                activity = row.get('activity')
+                booking_type_code = row.get('codes')
+                booking_type = row.get('reservation_type')
+                division = row.get('division')
+                classroom = row.get('class') 
                 
-            logger.info(f"Completed processing Room Allocations data. Total records: {total_records}")
+                # Validate required data
+                is_valid, message = validate_room_allocation_row(
+                    room_name, date_str, time_start, time_end, user_name
+                )
+                if not is_valid:
+                    stats['invalid'] += 1
+                    log_error("Data Validation", 
+                            f"Invalid row: {message} - Date: {date_str}, "
+                            f"Time: {time_start}-{time_end}, Room: {room_name}, "
+                            f"User: {user_name}")
+                    continue
+                
+                # Get dimension IDs for required fields
+                if date_str not in all_dates:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    date_id = get_or_create_date(session, date_obj)
+                    all_dates[date_str] = date_id
+                date_id = all_dates[date_str]
+                
+                # Handle time format and add seconds if missing
+                if time_start and ':' in time_start and time_start.count(':') == 1:
+                    time_start = f"{time_start}:00"
+                if time_end and ':' in time_end and time_end.count(':') == 1:
+                    time_end = f"{time_end}:00"
+                
+                if time_start not in all_times:
+                    try:
+                        time_obj = datetime.strptime(time_start, '%H:%M:%S')
+                        time_id = get_or_create_time(session, time_obj)
+                        all_times[time_start] = time_id
+                    except ValueError:
+                        time_obj = datetime.strptime(time_start, '%H:%M')
+                        time_id = get_or_create_time(session, time_obj)
+                        all_times[time_start] = time_id
+                time_start_id = all_times[time_start]
+                
+                if time_end not in all_times:
+                    try:
+                        time_obj = datetime.strptime(time_end, '%H:%M:%S')
+                        time_id = get_or_create_time(session, time_obj)
+                        all_times[time_end] = time_id
+                    except ValueError:
+                        time_obj = datetime.strptime(time_end, '%H:%M')
+                        time_id = get_or_create_time(session, time_obj)
+                        all_times[time_end] = time_id
+                time_end_id = all_times[time_end]
+                
+                if room_name not in all_rooms:
+                    room_id = get_or_create_room(session, room_name)
+                    all_rooms[room_name] = room_id
+                room_id = all_rooms[room_name]
+                
+                if user_name.lower() not in all_users:
+                    user_id = get_or_create_user(session, user_name)
+                    all_users[user_name.lower()] = user_id
+                user_id = all_users[user_name.lower()]
+                
+                # Get dimension IDs for optional fields
+                professor_id = None
+                if professor and not pd.isna(professor):
+                    if professor.lower() not in all_users:
+                        professor_id = get_or_create_user(session, professor)
+                        all_users[professor.lower()] = professor_id
+                    professor_id = all_users[professor.lower()]
+                
+                activity_id = None
+                if activity and not pd.isna(activity):
+                    if activity.lower() not in all_activities:
+                        activity_id = get_or_create_activity(session, activity)
+                        all_activities[activity.lower()] = activity_id
+                    activity_id = all_activities[activity.lower()]
+                
+                booking_type_id = None
+                if booking_type_code and booking_type and not pd.isna(booking_type_code) and not pd.isna(booking_type):
+                    key = (booking_type_code, booking_type)
+                    if key not in all_booking_types:
+                        booking_type_id = get_or_create_booking_type(session, booking_type_code, booking_type)
+                        all_booking_types[key] = booking_type_id
+                    else:
+                        booking_type_id = all_booking_types[key]
+                else:
+                    # Use default booking type if none provided
+                    booking_type_id = all_booking_types[default_key]
+                
+                division_id = None
+                if division and not pd.isna(division):
+                    if division.lower() not in all_divisions:
+                        division_id = get_or_create_division(session, division)
+                        all_divisions[division.lower()] = division_id
+                    division_id = all_divisions[division.lower()]
+                
+                classroom_id = None
+                if classroom and not pd.isna(classroom):
+                    if classroom.lower() not in all_classrooms:
+                        classroom_id = get_or_create_classroom(session, classroom)
+                        all_classrooms[classroom.lower()] = classroom_id
+                    classroom_id = all_classrooms[classroom.lower()]
+                
+                # Check for duplicates in memory
+                record_key = (date_id, time_start_id, time_end_id, room_id, user_id)
+                if record_key in existing_records:
+                    stats['duplicates'] += 1
+                    continue
+                
+                # Add to batch for insertion
+                # Convert the FactBookings object attributes to a dictionary for bulk_insert_mappings
+                booking_data = {
+                    'id_date': date_id,
+                    'id_time_start': time_start_id,
+                    'id_time_end': time_end_id,
+                    'id_room': room_id,
+                    'id_user': user_id,
+                    'id_professor': professor_id,
+                    'id_classroom': classroom_id,
+                    'id_booking_type': booking_type_id,
+                    'id_division': division_id,
+                    'id_activity': activity_id,
+                    'is_active': True,
+                    'external_id': reservation_externalId
+                }
+                records_to_insert.append(booking_data) # Append the dictionary, not the object
+                stats['inserted'] += 1
+                
+                # Add to existing records to prevent future duplicates
+                existing_records.add(record_key)
+                
+                # Batch commit
+                if len(records_to_insert) >= batch_size:
+                    try:
+                        session.bulk_insert_mappings(FactBookings, records_to_insert) # Pass the list of dictionaries
+                        session.commit()
+                        logging.info(f"Committed batch of {len(records_to_insert)} records (total processed: {stats['processed']})")
+                        records_to_insert = []
+                    except Exception as batch_error:
+                        error_trace = traceback.format_exc()
+                        log_error("Batch Commit", f"Error during batch commit: {batch_error}", error_trace)
+                        session.rollback()
+                        records_to_insert = [] # Clear batch on error
+                
+            except Exception as row_error:
+                error_trace = traceback.format_exc()
+                log_error("Row Processing", f"Error processing row: {row_error}", error_trace)
+                continue
+        
+        # Commit any remaining rows in the final batch
+        if records_to_insert:
+            try:
+                session.bulk_insert_mappings(FactBookings, records_to_insert) # Pass the list of dictionaries
+                session.commit()
+                logging.info(f"Committed final batch of {len(records_to_insert)} records")
+            except Exception as batch_error:
+                error_trace = traceback.format_exc()
+                log_error("Final Batch Commit", f"Error during final batch commit: {batch_error}", error_trace)
+                session.rollback()
+                
+        # =======================================
+        # STEP 4: Identify and deactivate removed reservations
+        # =======================================
+        reservations_to_deactivate = []
+        for external_id, booking_id in active_reservations.items():
+            if external_id not in current_file_reservations:
+                reservations_to_deactivate.append(booking_id)
+                
+        if reservations_to_deactivate:
+            logging.info(f"Found {len(reservations_to_deactivate)} reservations to deactivate")
             
-        except Exception as e:
-            logger.error(f"Error in process_room_allocations: {str(e)}")
-            logger.error(traceback.format_exc())
-            self.session.rollback()
-            raise
-            
-    def run(self):
-        """Run the complete ETL process"""
-        try:
-            logger.info("Starting Room Allocation ETL process")
-            
-            # Process room allocation data
-            self.process_room_allocations()
-            
-            logger.info("Room Allocation ETL process completed successfully")
-            
-        except Exception as e:
-            logger.error(f"ETL process failed: {str(e)}")
-            logger.error(traceback.format_exc())
-            self.session.rollback()
-        finally:
-            self.session.close()
+            # Deactivate reservations in batches
+            deactivate_batch_size = 500
+            for i in range(0, len(reservations_to_deactivate), deactivate_batch_size):
+                batch_ids = reservations_to_deactivate[i:i + deactivate_batch_size]
+                try:
+                    session.query(FactBookings).filter(
+                        FactBookings.id_booking.in_(batch_ids)
+                    ).update({FactBookings.is_active: False}, synchronize_session=False) # Use updated is_active
+                    session.commit()
+                    stats['deactivated'] += len(batch_ids)
+                    logging.info(f"Deactivated batch of {len(batch_ids)} reservations")
+                except Exception as deactivate_error:
+                    error_trace = traceback.format_exc()
+                    log_error("Deactivation Batch Commit", f"Error during deactivation batch commit: {deactivate_error}", error_trace)
+                    session.rollback()
+        
+        # Log statistics for this file
+        logging.info("=== Summary ===")
+        logging.info(f"Total Processed: {stats['processed']}")
+        logging.info(f"Total Inserted: {stats['inserted']}")
+        logging.info(f"Total Duplicates: {stats['duplicates']}")
+        logging.info(f"Total Invalid: {stats['invalid']}")
+        logging.info(f"Total Deactivated: {stats['deactivated']}")
+        logging.info("===============")
+        
+        return stats
+    
+    except SQLAlchemyError as e:
+        error_trace = traceback.format_exc()
+        log_error("Database", f"Database Error: {str(e)}", error_trace)
+        session.rollback()
+        raise
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Processing", f"Processing Error: {str(e)}", error_trace)
+        session.rollback()
+        raise
 
+def populate_dim_tables_and_facts():
+    """Main ETL process to populate all tables"""
+    # Setup logging for the ETL process
+    setup_logging("Room Allocation ETL")
+    logging.info("Starting Room Allocation ETL process")
+    
+    # Check for files first before attempting any database operations
+    organized_files = get_files_by_category()
+    
+    # If the directory is empty, log an INFO message and exit 
+    if not organized_files or not any(organized_files.values()):
+        logging.info("No files found in the directory. This is normal if data files don't arrive daily.")
+        logging.info("Room Allocation ETL process completed without processing any files")
+        return
+    
+    # Now that we know files exist, proceed with database initialization
+    try:
+        init_db()
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("Database Init", f"Error initializing database: {str(e)}", error_trace)
+        send_error_summary("Room Allocation ETL")
+        return
+    
+    # Create session after successful db initialization
+    session = get_session()
+    if not session:
+        log_error("Database Session", "Failed to create database session")
+        send_error_summary("Room Allocation ETL")
+        return
+    
+    try:
+        total_stats = {'processed': 0, 'inserted': 0, 'duplicates': 0, 'invalid': 0}
+        
+        for main_folder, categories in organized_files.items():
+            room_allocation_files = categories.get('RoomAllocations', [])
+            
+            for allocation_file in room_allocation_files:
+                try:
+                    logging.info(f"Processing room allocation file: {os.path.basename(allocation_file)}")
+                    
+                    # Read and process the allocation file
+                    allocation_df = pd.read_csv(allocation_file)
+                    
+                    # Process the files
+                    file_stats = process_room_allocation_file(session, allocation_df)
+                    
+                    # Update total stats
+                    for key in total_stats:
+                        if key in file_stats:
+                            total_stats[key] += file_stats[key]
+                    
+                except Exception as e:
+                    error_trace = traceback.format_exc()
+                    log_error("File Processing", f"Error processing file {allocation_file}: {str(e)}", error_trace)
+                    continue
+        
+        # Only show summary if files were processed
+        if total_stats['processed'] > 0:
+            logging.info("=== Final Summary ===")
+            logging.info(f"Total Processed: {total_stats['processed']}")
+            logging.info(f"Total Inserted: {total_stats['inserted']}")
+            logging.info(f"Total Duplicates: {total_stats['duplicates']}")
+            logging.info(f"Total Invalid: {total_stats['invalid']}")
+            logging.info("===================")
+        
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        log_error("ETL Process", f"ETL Error: {str(e)}", error_trace)
+        if session:
+            session.rollback()
+    finally:
+        if session:
+            session.close()
+        
+        send_error_summary("Room Allocation ETL")
+        
+        # Log completion message
+        logging.info("Room Allocation ETL process completed")
 
 if __name__ == "__main__":
-    etl = RoomAllocationETL()
-    etl.run()
+    populate_dim_tables_and_facts()
+

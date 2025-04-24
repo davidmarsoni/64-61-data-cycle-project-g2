@@ -384,7 +384,7 @@ def process_files_by_type(session, folder_path, files, file_type, all_dates, all
                     status_id = mappings['status'][status_name]
                     
                     # New data values (already converted to correct types in the validation function)
-                    new_total_energy_produced = row['TotalEnergyProduced']
+                    new_totalEnergyProduced = row['TotalEnergyProduced']
                     new_energy_produced = row['EnergyProduced']
                     new_error_count = row['ErrorCount']
                     
@@ -397,14 +397,14 @@ def process_files_by_type(session, folder_path, files, file_type, all_dates, all
                         
                         # Check if any values have changed
                         values_changed = (
-                            abs(existing_record.total_energy_produced - new_total_energy_produced) > 0.001 or
+                            abs(existing_record.total_energy_produced - new_totalEnergyProduced) > 0.001 or
                             abs(existing_record.energy_produced - new_energy_produced) > 0.001 or
                             existing_record.error_count != new_error_count
                         )
                         
                         if values_changed:
                             # Update existing record with new values
-                            existing_record.total_energy_produced = new_total_energy_produced
+                            existing_record.total_energy_produced = new_totalEnergyProduced
                             existing_record.energy_produced = new_energy_produced
                             existing_record.error_count = new_error_count
                             file_stats['updated'] += 1
@@ -417,9 +417,9 @@ def process_files_by_type(session, folder_path, files, file_type, all_dates, all
                             id_time=time_id,
                             id_inverter=inverter_id,
                             id_status=status_id,
-                            total_energy_produced=new_total_energy_produced,
-                            energy_produced=new_energy_produced,
-                            error_count=new_error_count
+                            total_energy_produced=new_totalEnergyProduced, # Use updated total_energy_produced
+                            energy_produced=new_energy_produced, # Use updated energy_produced
+                            error_count=new_error_count # Use updated error_count
                         )
                         session.add(new_record)
                         file_stats['inserted'] += 1
@@ -488,13 +488,11 @@ def populate_dim_tables_and_facts():
     except Exception as e:
         error_trace = traceback.format_exc()
         log_error("Database Init", f"Error initializing database: {str(e)}", error_trace)
-        send_error_summary("Solarlogs ETL")
         return
         
     session = get_session()
     if not session:
         log_error("Database Session", "Failed to create database session")
-        send_error_summary("Solarlogs ETL")
         return
     
     try:
@@ -503,7 +501,6 @@ def populate_dim_tables_and_facts():
         
         if "Solarlogs" not in files_by_category or not files_by_category["Solarlogs"]:
             log_error("File Search", "No Solarlogs files found in any category")
-            send_error_summary("Solarlogs ETL")
             return
         
         # Process files for each category (PV and min) directly from files_by_category
@@ -593,7 +590,7 @@ def populate_dim_tables_and_facts():
     finally:
         session.close()
         
-        # Send error summary if there were any errors
+        # Send error summary if any errors occurred
         send_error_summary("Solarlogs ETL")
         
         logging.info("Solarlogs ETL process completed")
