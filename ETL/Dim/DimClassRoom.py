@@ -20,14 +20,14 @@ def get_or_create_classroom(session, classroom_name):
     try:
         # Check if classroom already exists
         classroom = session.query(DimClassroom).filter(
-            DimClassroom.classroomName == classroom_name
+            DimClassroom.classroom_name == classroom_name
         ).first()
         
         if classroom:
             return classroom.id_classroom
         
         # Create new classroom
-        new_classroom = DimClassroom(classroomName=classroom_name)
+        new_classroom = DimClassroom(classroom_name=classroom_name)
         session.add(new_classroom)
         session.flush()  # Flush to get the ID without committing transaction
         

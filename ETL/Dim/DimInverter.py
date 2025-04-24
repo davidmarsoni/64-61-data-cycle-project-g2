@@ -21,7 +21,7 @@ def get_or_create_inverter(session: Session, inverter_name):
     
     # Check if inverter exists
     inverter_record = session.query(DimInverter).filter(
-        DimInverter.inverterName == inverter_name
+        DimInverter.inverter_name == inverter_name
     ).first()
     
     if inverter_record:
@@ -30,7 +30,7 @@ def get_or_create_inverter(session: Session, inverter_name):
         return inverter_record.id_inverter
     
     # Create new inverter record
-    new_inverter = DimInverter(inverterName=inverter_name)
+    new_inverter = DimInverter(inverter_name=inverter_name)
     
     session.add(new_inverter)
     session.flush()

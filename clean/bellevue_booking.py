@@ -23,7 +23,6 @@ def process_bellevue_booking(file_path, output_path, encoding, filename):
         # Clean column headers first
         data.columns = [col.strip('"') for col in data.columns]
         
-        # Replace deprecated applymap with apply on each column
         for col in data.select_dtypes(include=['object']).columns:
             data[col] = data[col].apply(lambda x: x.strip('"') if isinstance(x, str) else x)
     

@@ -5,6 +5,10 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
+import sys
+# Add parent directory to path to make ETL a proper package import
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
 from ETL.db.base import get_session, init_db
 from ETL.db.models import FactSolarProduction
@@ -234,13 +238,13 @@ def process_solar_files(session, solarlogs_folder):
         # Fetch all inverters from dimension table
         all_inverters = {}
         for inverter in session.query(DimInverter).all():
-            all_inverters[inverter.inverterName] = inverter.id_inverter
+            all_inverters[inverter.inverter_name] = inverter.id_inverter
         logging.info(f"Preloaded {len(all_inverters)} inverters")
         
         # Fetch all statuses from dimension table
         all_statuses = {}
         for status in session.query(DimStatus).all():
-            all_statuses[status.statusName] = status.id_status
+            all_statuses[status.status_name] = status.id_status
         logging.info(f"Preloaded {len(all_statuses)} statuses")
         
         # Create a dictionary for existing records to enable updates
@@ -526,13 +530,13 @@ def populate_dim_tables_and_facts():
         # Fetch all inverters from dimension table
         all_inverters = {}
         for inverter in session.query(DimInverter).all():
-            all_inverters[inverter.inverterName] = inverter.id_inverter
+            all_inverters[inverter.inverter_name] = inverter.id_inverter
         logging.info(f"Preloaded {len(all_inverters)} inverters")
         
         # Fetch all statuses from dimension table
         all_statuses = {}
         for status in session.query(DimStatus).all():
-            all_statuses[status.statusName] = status.id_status
+            all_statuses[status.status_name] = status.id_status
         logging.info(f"Preloaded {len(all_statuses)} statuses")
         
         # Create a dictionary for existing records to enable updates
@@ -617,13 +621,13 @@ def process_files_from_category(session, folder_path, files, category):
         # Fetch all inverters from dimension table
         all_inverters = {}
         for inverter in session.query(DimInverter).all():
-            all_inverters[inverter.inverterName] = inverter.id_inverter
+            all_inverters[inverter.inverter_name] = inverter.id_inverter
         logging.info(f"Preloaded {len(all_inverters)} inverters")
         
         # Fetch all statuses from dimension table
         all_statuses = {}
         for status in session.query(DimStatus).all():
-            all_statuses[status.statusName] = status.id_status
+            all_statuses[status.status_name] = status.id_status
         logging.info(f"Preloaded {len(all_statuses)} statuses")
         
         # Create a dictionary for existing records to enable updates

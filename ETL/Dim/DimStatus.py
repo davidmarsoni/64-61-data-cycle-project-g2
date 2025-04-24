@@ -20,7 +20,7 @@ def get_or_create_status(session: Session, status_name):
     
     # Check if status exists
     status_record = session.query(DimStatus).filter(
-        DimStatus.statusName == status_name
+        DimStatus.status_name == status_name
     ).first()
     
     if status_record:
@@ -29,7 +29,7 @@ def get_or_create_status(session: Session, status_name):
         return status_record.id_status
     
     # Create new status record
-    new_status = DimStatus(statusName=status_name)
+    new_status = DimStatus(status_name=status_name)
     
     session.add(new_status)
     session.flush()

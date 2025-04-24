@@ -20,7 +20,7 @@ def get_or_create_site(session: Session, site_name):
     
     # Check if site exists
     site_record = session.query(DimSite).filter(
-        DimSite.siteName == site_name
+        DimSite.site_name == site_name
     ).first()
     
     if site_record:
@@ -29,7 +29,7 @@ def get_or_create_site(session: Session, site_name):
         return site_record.id_site
     
     # Create new site record
-    new_site = DimSite(siteName=site_name)
+    new_site = DimSite(site_name=site_name)
     
     session.add(new_site)
     session.flush()

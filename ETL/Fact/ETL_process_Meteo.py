@@ -123,7 +123,7 @@ def process_meteo_files(session, meteo_folder):
         # Fetch all sites from dimension table
         all_sites = {}
         for site in session.query(DimSite).all():
-            all_sites[site.siteName] = site.id_site
+            all_sites[site.site_name] = site.id_site
         logging.info(f"Preloaded {len(all_sites)} sites")
         
         # Create a dictionary for existing records to enable updates

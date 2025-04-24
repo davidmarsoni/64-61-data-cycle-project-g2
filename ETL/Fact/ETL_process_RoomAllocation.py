@@ -112,32 +112,32 @@ def process_room_allocation_file(session, allocation_df):
         # Fetch all rooms from dimension table
         all_rooms = {}
         for room in session.query(DimRoom).all():
-            all_rooms[room.roomName] = room.id_room
+            all_rooms[room.room_name] = room.id_room
         logging.info(f"Preloaded {len(all_rooms)} rooms")
         
         # Fetch all users from dimension table
         all_users = {}
         for user in session.query(DimUser).all():
-            all_users[user.userName.lower()] = user.id_user
+            all_users[user.username.lower()] = user.id_user
         logging.info(f"Preloaded {len(all_users)} users")
         
         # Fetch all activities from dimension table
         all_activities = {}
         for activity in session.query(DimActivity).all():
-            all_activities[activity.activityName.lower()] = activity.id_activity
+            all_activities[activity.activity_name.lower()] = activity.id_activity
         logging.info(f"Preloaded {len(all_activities)} activities")
         
         # Fetch all booking types from dimension table
         all_booking_types = {}
         for booking_type in session.query(DimBookingType).all():
-            key = (booking_type.code, booking_type.bookingType)
-            all_booking_types[key] = booking_type.id_booking_type # Use updated id_booking_type
+            key = (booking_type.code, booking_type.booking_type)
+            all_booking_types[key] = booking_type.id_booking_type 
         logging.info(f"Preloaded {len(all_booking_types)} booking types")
         
         # Fetch all classrooms from dimension table
         all_classrooms = {}
         for classroom in session.query(DimClassroom).all():
-            all_classrooms[classroom.classroomName.lower()] = classroom.id_classroom
+            all_classrooms[classroom.classroom_name.lower()] = classroom.id_classroom
         logging.info(f"Preloaded {len(all_classrooms)} classrooms")
         
         # Create or ensure a default booking type exists
@@ -155,7 +155,7 @@ def process_room_allocation_file(session, allocation_df):
         # Fetch all divisions from dimension table
         all_divisions = {}
         for division in session.query(DimDivision).all():
-            all_divisions[division.divisionName.lower()] = division.id_division
+            all_divisions[division.division_name.lower()] = division.id_division
         logging.info(f"Preloaded {len(all_divisions)} divisions")
         
         # =======================================
@@ -206,10 +206,10 @@ def process_room_allocation_file(session, allocation_df):
                 FactBookings.id_time_end,
                 FactBookings.id_room,
                 FactBookings.id_user,
-                FactBookings.external_id # Use updated external_id
+                FactBookings.external_id
             ).filter(
                 FactBookings.id_date.in_(list(date_set)),
-                FactBookings.is_active == True # Use updated is_active
+                FactBookings.is_active == True
             ).all()
             
             for booking in booking_query:
@@ -227,7 +227,7 @@ def process_room_allocation_file(session, allocation_df):
             FactBookings.id_time_end,
             FactBookings.id_room,
             FactBookings.id_user
-        ).filter(FactBookings.is_active == True).all(): # Use updated is_active
+        ).filter(FactBookings.is_active == True).all():
             existing_records.add((
                 record.id_date, 
                 record.id_time_start,
@@ -270,7 +270,7 @@ def process_room_allocation_file(session, allocation_df):
                 professor = row.get('professor')
                 activity = row.get('activity')
                 booking_type_code = row.get('codes')
-                booking_type = row.get('reservation_type')
+                booking_type_name = row.get('reservation_type')
                 division = row.get('division')
                 classroom = row.get('class') 
                 
@@ -347,10 +347,10 @@ def process_room_allocation_file(session, allocation_df):
                     activity_id = all_activities[activity.lower()]
                 
                 booking_type_id = None
-                if booking_type_code and booking_type and not pd.isna(booking_type_code) and not pd.isna(booking_type):
-                    key = (booking_type_code, booking_type)
+                if booking_type_code and booking_type_name and not pd.isna(booking_type_code) and not pd.isna(booking_type_name): # Used renamed variable
+                    key = (booking_type_code, booking_type_name)
                     if key not in all_booking_types:
-                        booking_type_id = get_or_create_booking_type(session, booking_type_code, booking_type)
+                        booking_type_id = get_or_create_booking_type(session, booking_type_code, booking_type_name) # Used renamed variable
                         all_booking_types[key] = booking_type_id
                     else:
                         booking_type_id = all_booking_types[key]
@@ -447,7 +447,7 @@ def process_room_allocation_file(session, allocation_df):
                 try:
                     session.query(FactBookings).filter(
                         FactBookings.id_booking.in_(batch_ids)
-                    ).update({FactBookings.is_active: False}, synchronize_session=False) # Use updated is_active
+                    ).update({FactBookings.is_active: False}, synchronize_session=False)
                     session.commit()
                     stats['deactivated'] += len(batch_ids)
                     logging.info(f"Deactivated batch of {len(batch_ids)} reservations")

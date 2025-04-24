@@ -21,57 +21,57 @@ class DimSite(Base):
     __tablename__ = 'DimSite'
     
     id_site = Column(Integer, primary_key=True, autoincrement=True)
-    siteName = Column(String(255), nullable=False)
+    site_name = Column(String(255), nullable=False)
 
 # Missing dimension tables
 class DimRoom(Base):
     __tablename__ = 'DimRoom'
     
     id_room = Column(Integer, primary_key=True, autoincrement=True)
-    roomName = Column(String(255), nullable=False)
+    room_name = Column(String(255), nullable=False)
 
 class DimUser(Base):
     __tablename__ = 'DimUser'
     
     id_user = Column(Integer, primary_key=True, autoincrement=True)
-    userName = Column(String(255), nullable=False)
+    username = Column(String(255), nullable=False) 
 
 class DimActivity(Base):
     __tablename__ = 'DimActivity'
     
     id_activity = Column(Integer, primary_key=True, autoincrement=True)
-    activityName = Column(String(255), nullable=False)
+    activity_name = Column(String(255), nullable=False) 
 
 class DimBookingType(Base):
     __tablename__ = 'DimBookingType'
     
     id_booking_type = Column(Integer, primary_key=True, autoincrement=True) 
     code = Column(String(50), nullable=False)
-    bookingType = Column(String(100), nullable=False)
+    booking_type = Column(String(100), nullable=False)
 
 class DimDivision(Base):
     __tablename__ = 'DimDivision'
     
     id_division = Column(Integer, primary_key=True, autoincrement=True)
-    divisionName = Column(String(255), nullable=False)
+    division_name = Column(String(255), nullable=False)
 
 class DimClassroom(Base):
     __tablename__ = 'DimClassroom'
     
     id_classroom = Column(Integer, primary_key=True, autoincrement=True)
-    classroomName = Column(String(255), nullable=False)
+    classroom_name = Column(String(255), nullable=False)
 
 class DimInverter(Base):
     __tablename__ = 'DimInverter'
     
     id_inverter = Column(Integer, primary_key=True, autoincrement=True)
-    inverterName = Column(String(255), nullable=False)
+    inverter_name = Column(String(255), nullable=False)
 
 class DimStatus(Base):
     __tablename__ = 'DimStatus'
     
     id_status = Column(Integer, primary_key=True, autoincrement=True)
-    statusName = Column(String(255), nullable=False)
+    status_name = Column(String(255), nullable=False) # Renamed from statusName
 
 class FactMeteoSwissData(Base):
     __tablename__ = 'FactMeteoSwissData'
@@ -101,9 +101,9 @@ class FactBookings(Base):
     id_booking_type = Column(Integer, ForeignKey('DimBookingType.id_booking_type'), nullable=False)
     id_division = Column(Integer, ForeignKey('DimDivision.id_division'), nullable=True)
     id_activity = Column(Integer, ForeignKey('DimActivity.id_activity'), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False) # Renamed from isActive
-    last_modified = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now, nullable=False)
-    external_id = Column(String(255), nullable=True)  # Renamed from externalId
+    is_active = Column(Boolean, default=True, nullable=False) 
+    last_modified = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now, nullable=False) 
+    external_id = Column(String(255), nullable=True)
 
 class FactEnergyConsumption(Base):
     __tablename__ = 'FactEnergyConsumption'
