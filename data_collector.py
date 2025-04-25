@@ -4,20 +4,33 @@ import sys
 import os
 import traceback
 import socket
+import uuid
 from datetime import datetime
 
 # Import the installation helper from config
 from config import ensure_installed, Config
 
 # Ensure all required packages are installed before attempting to import them
-ensure_installed('pysmb')
+ensure_installed('smbprotocol')
 ensure_installed('paramiko')
 ensure_installed('keyring')  # Added keyring to requirements
 ensure_installed('chardet')
 
 # Now that we've ensured the packages are installed, import them
-from smb.SMBConnection import SMBConnection
 import paramiko
+from smbprotocol.connection import Connection
+from smbprotocol.session import Session
+from smbprotocol.tree import TreeConnect
+from smbprotocol.open import (
+    Open,
+    ImpersonationLevel,
+    FilePipePrinterAccessMask,
+    FileAttributes,
+    ShareAccess,
+    CreateDisposition,
+    CreateOptions,
+    FileInformationClass
+)
 
 # Track errors throughout the execution
 error_log = []
@@ -44,28 +57,29 @@ def log_error(phase, error_msg, trace=None):
         logging.error(f"{phase}: {error_msg}")
 
 def connect_smb():
-    """Connect to the SMB server and return the connection object.
+    """Connect to the SMB server using smbprotocol library.
 
     Raises:
         ConnectionError: Logging error if connection fails.
 
     Returns:
-        _type_: SMBConnection object
+        tuple: Connection, Session, and a dictionary of connected trees
     """
     try:
         logging.info(f"Connecting to SMB server {Config.SMB_HOST}...")
-        conn = SMBConnection(
-            Config.USERNAME,
-            Config.PASSWORD,
-            socket.gethostname(),
-            Config.SMB_HOST,
-            use_ntlm_v2=True,
-            is_direct_tcp=True
-        )
-        if conn.connect(Config.SMB_HOST, 445) or conn.connect(Config.SMB_HOST, 139):
-            logging.info("SMB Connection successful!")
-            return conn
-        raise ConnectionError("Failed to establish SMB connection. If this is an authentication issue, make sure to run secure/set_credentials.py to set up your credentials properly.")
+        # Create connection with unique client UUID
+        connection = Connection(uuid.uuid4(), Config.SMB_HOST, 445)
+        connection.connect()
+        
+        # Create session with credentials
+        session = Session(connection, Config.USERNAME, Config.PASSWORD, require_encryption=True)
+        session.connect()
+        
+        # Keep track of connected trees
+        trees = {}
+        
+        logging.info("SMB Connection successful!")
+        return connection, session, trees
     except Exception as e:
         error_msg = str(e)
         # Check for common authentication error indicators
@@ -134,14 +148,16 @@ def save_downloaded_files(record_file, downloaded):
     except Exception as e:
         log_error("Save Downloaded Files", f"Error saving records to {record_file}: {e}", traceback.format_exc())
 
-def download_smb_files(conn):
-    """Download files from SMB shares based on configuration.
+def download_smb_files(connection, session, trees):
+    """Download files from SMB shares based on configuration using smbprotocol.
 
     Args:
-        conn (_type_): SMBConnection object
+        connection: smbprotocol Connection object
+        session: smbprotocol Session object
+        trees: dict to store TreeConnect objects
 
     Returns:
-        _type_: total number of new downloaded files and errors by share
+        tuple: total number of new downloaded files and errors by share
     """
     downloaded_files = load_downloaded_files(Config.SMB_RECORD_FILE)
     total_new_downloaded = 0
@@ -151,20 +167,72 @@ def download_smb_files(conn):
         share_dir = os.path.join(Config.DATA_DIR, share)
         os.makedirs(share_dir, exist_ok=True)
         share_new_downloads = 0
-
+        
         try:
             logging.info(f"Accessing share {share}...")
-            files = conn.listPath(share, "/")
-            for file in files:
-                filename = file.filename
+            
+            # Create tree connection for this share
+            share_path = rf"\\{Config.SMB_HOST}\{share}"
+            tree = TreeConnect(session, share_path)
+            tree.connect()
+            trees[share] = tree
+            
+            # Open root directory for this share
+            dir_open = Open(tree, "")
+            dir_open.create(
+                ImpersonationLevel.Impersonation,
+                FilePipePrinterAccessMask.GENERIC_READ,
+                FileAttributes.FILE_ATTRIBUTE_DIRECTORY,
+                ShareAccess.FILE_SHARE_READ,
+                CreateDisposition.FILE_OPEN,
+                CreateOptions.FILE_DIRECTORY_FILE
+            )
+            
+            # Query directory for files
+            files = dir_open.query_directory("*", FileInformationClass.FILE_DIRECTORY_INFORMATION)
+            
+            for file_info in files:
+                filename = file_info["file_name"].get_value().decode('utf-16-le')
+                
                 if filename in [".", ".."] or filename in downloaded_files or not filename.endswith(".csv"):
                     continue
+                    
                 if any(prefix in filename for prefix in prefixes):
                     local_path = os.path.join(share_dir, filename)
                     try:
                         logging.info(f"Downloading {filename} to {local_path}")
-                        with open(local_path, "wb") as local_file:
-                            conn.retrieveFile(share, filename, local_file)
+                        
+                        # Create file open and read file content
+                        file_open = Open(tree, filename)
+                        file_open.create(
+                            ImpersonationLevel.Impersonation,
+                            FilePipePrinterAccessMask.GENERIC_READ,
+                            FileAttributes.FILE_ATTRIBUTE_NORMAL,
+                            ShareAccess.FILE_SHARE_READ,
+                            CreateDisposition.FILE_OPEN,
+                            CreateOptions.FILE_NON_DIRECTORY_FILE
+                        )
+                        
+                        # Read entire file in one go (alternative to query_file_info which doesn't exist)
+                        try:
+                            # Start with a small size and increase if needed
+                            position = 0
+                            buffer_size = 8192
+                            with open(local_path, "wb") as local_file:
+                                while True:
+                                    data = file_open.read(position, buffer_size)
+                                    if not data:  # End of file reached
+                                        break
+                                    local_file.write(data)
+                                    position += len(data)
+                        except Exception as e:
+                            # If specific error about EOF, this is normal
+                            if "STATUS_END_OF_FILE" in str(e):
+                                pass  # Successfully read all data
+                            else:
+                                raise  # Re-raise if it's a different error
+                        
+                        file_open.close()
                         downloaded_files.add(filename)
                         share_new_downloads += 1
                     except Exception as file_error:
@@ -174,6 +242,7 @@ def download_smb_files(conn):
                         errors_by_share[share].append(error_msg)
                         log_error(f"SMB Download - {share}", error_msg, traceback.format_exc())
             
+            dir_open.close()
             logging.info(f"Summary for {share}: Downloaded {share_new_downloads} new files.")
             total_new_downloaded += share_new_downloads
         except Exception as e:
@@ -272,6 +341,8 @@ def main():
     """Main function to execute the data collection process.
     """
     smb_conn = None
+    smb_session = None
+    smb_trees = {}
     sftp_client = None
     transport = None
     critical_error = False
@@ -293,8 +364,8 @@ def main():
 
         # Process SMB files
         try:
-            smb_conn = connect_smb()
-            results["smb_files"], results["smb_errors"] = download_smb_files(smb_conn)
+            smb_conn, smb_session, smb_trees = connect_smb()
+            results["smb_files"], results["smb_errors"] = download_smb_files(smb_conn, smb_session, smb_trees)
         except Exception as e:
             log_error("SMB Processing", f"Failed to complete SMB file downloads: {e}", traceback.format_exc())
         
@@ -323,8 +394,23 @@ def main():
         # Close connections
         if smb_conn:
             try:
-                smb_conn.close()
-                logging.debug("SMB connection closed")
+                # Close tree connections first
+                for tree in smb_trees.values():
+                    try:
+                        tree.disconnect()
+                    except Exception:
+                        pass
+                
+                # Close session
+                if smb_session:
+                    try:
+                        smb_session.disconnect()
+                    except Exception:
+                        pass
+                
+                # Close connection
+                smb_conn.disconnect(True)
+                logging.debug("SMB connections closed")
             except Exception:
                 pass
                 
