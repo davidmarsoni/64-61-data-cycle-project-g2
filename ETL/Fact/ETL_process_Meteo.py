@@ -11,12 +11,8 @@ from ETL.db.models import FactMeteoSwissData
 from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
 from ETL.Dim.DimSite import get_or_create_site
-from config import ensure_installed, Config
+from config import Config
 from ETL.db.models import DimDate, DimTime, DimSite
-
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 SUBFOLDERS = {
     "Meteo": ["Pred"]

@@ -16,12 +16,8 @@ from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
 from ETL.Dim.DimInverter import get_or_create_inverter
 from ETL.Dim.DimStatus import get_or_create_status
-from config import ensure_installed, Config
+from config import  Config
 from ETL.db.models import DimDate, DimTime, DimInverter, DimStatus
-  
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 SUBFOLDERS = {
     "Solarlogs": ["PV", "min"],

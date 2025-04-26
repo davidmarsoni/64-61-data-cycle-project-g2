@@ -21,15 +21,11 @@ from ETL.Dim.DimActivity import get_or_create_activity
 from ETL.Dim.DimBookingType import get_or_create_booking_type
 from ETL.Dim.DimDivision import get_or_create_division
 from ETL.Dim.DimClassroom import get_or_create_classroom
-from config import ensure_installed, Config
+from config import Config
 from ETL.db.models import (
     DimDate, DimTime, DimRoom, DimUser, 
     DimActivity, DimBookingType, DimDivision, DimClassroom
 )
-  
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 SUBFOLDERS = {
     "BellevueBooking": "RoomAllocations",

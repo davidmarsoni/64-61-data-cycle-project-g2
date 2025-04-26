@@ -7,13 +7,7 @@ import socket
 from datetime import datetime
 
 # Import the installation helper from config
-from config import ensure_installed, Config
-
-# Ensure all required packages are installed before attempting to import them
-ensure_installed('pysmb')
-ensure_installed('paramiko')
-ensure_installed('keyring')  # Added keyring to requirements
-ensure_installed('chardet')
+from config import Config
 
 # Now that we've ensured the packages are installed, import them
 from smb.SMBConnection import SMBConnection

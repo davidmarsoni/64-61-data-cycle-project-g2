@@ -15,12 +15,8 @@ from ETL.db.base import get_session, init_db
 from ETL.db.models import FactEnergyConsumption
 from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
-from config import ensure_installed, Config
+from config import Config
 from ETL.db.models import DimDate, DimTime
-
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 # Define subfolder structure
 SUBFOLDERS = {
