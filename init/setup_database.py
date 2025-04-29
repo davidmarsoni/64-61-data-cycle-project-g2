@@ -156,7 +156,11 @@ def database_exists(engine, db_name="data_cycle_db"):
     return db_name in [db[0] for db in databases]
 
 def execute_script(script_content, force=False):
-    """Execute the SQL script to create the database schema"""
+    """Execute the SQL script to create the database schema.
+
+    Returns:
+        tuple: (bool, str) indicating success status and a descriptive message.
+    """
     logging.info("Starting database setup process")
     
     try:
@@ -164,37 +168,35 @@ def execute_script(script_content, force=False):
         engine = get_database_engine()
         logging.info("Established connection to database server")
         
-        # If not forcing recreation and database already exists, check first
-        if not force:
-            try:
-                with engine.connect() as connection:
-                    # Check if database exists
-                    result = connection.execute(text("SELECT name FROM master.dbo.sysdatabases WHERE name = 'data_cycle_db'"))
-                    if result.scalar():
-                        logging.warning("Database 'data_cycle_db' already exists. Use --force to recreate it.")
-                        return False
-            except SQLAlchemyError as e:
-                logging.error(f"Error checking database existence: {str(e)}")
-                raise
-        else:
-            # If force flag is set, check if database exists and ask for confirmation
-            try:
-                with engine.connect() as connection:
-                    result = connection.execute(text("SELECT name FROM master.dbo.sysdatabases WHERE name = 'data_cycle_db'"))
-                    if result.scalar():
-                        # Database exists, ask for confirmation
-                        print("\n⚠️ WARNING: You're about to drop and recreate the 'data_cycle_db' database.")
-                        print("All existing data will be permanently lost!")
-                        confirm = input("\nAre you sure you want to continue? (y/N): ")
-                        if confirm.lower() != 'y':
-                            logging.info("Database recreation canceled by user.")
-                            print("\n❌ Database recreation canceled.")
-                            return False
-                        else:
-                            print("\n🔄 Proceeding with database recreation...")
-            except SQLAlchemyError as e:
-                logging.error(f"Error checking database existence: {str(e)}")
-                raise
+        db_name = 'data_cycle_db'
+        db_exists = False
+        try:
+            with engine.connect() as connection:
+                # Check if database exists
+                result = connection.execute(text(f"SELECT name FROM master.dbo.sysdatabases WHERE name = '{db_name}'"))
+                db_exists = result.scalar() is not None
+        except SQLAlchemyError as e:
+            logging.error(f"Error checking database existence: {str(e)}")
+            return False, f"Error checking database existence: {str(e)}" # Return specific error
+
+        # Handle existing database based on force flag
+        if db_exists:
+            if not force:
+                warning_msg = f"Database '{db_name}' already exists. Use --force to recreate it."
+                logging.warning(warning_msg)
+                return False, warning_msg # Return specific warning
+            else:
+                # Ask for confirmation if forcing recreation
+                print(f"\nWARNING: You're about to drop and recreate the '{db_name}' database.")
+                print("All existing data will be permanently lost!")
+                confirm = input("\nAre you sure you want to continue? (y/N): ")
+                if confirm.lower() != 'y':
+                    cancel_msg = "Database recreation canceled by user."
+                    logging.info(cancel_msg)
+                    print("\nERROR: Database recreation canceled.") # Keep console error
+                    return False, cancel_msg # Return specific reason
+                else:
+                    print("\n🔄 Proceeding with database recreation...")
         
         # Parse the SQL script to handle GO statements properly
         statements = []
@@ -202,34 +204,30 @@ def execute_script(script_content, force=False):
             batch = batch.strip()
             if batch:
                 statements.append(batch)
-        
-        # Execute each batch individually - can't use a single transaction for all statements
+
+        # Execute each batch individually
         with engine.connect() as connection:
-            # First disable autocommit for manual transaction control
             connection = connection.execution_options(isolation_level="AUTOCOMMIT")
             
             for i, statement in enumerate(statements):
                 try:
-                    # Skip empty statements
                     if not statement.strip():
                         continue
-                    
                     logging.info(f"Executing SQL batch #{i+1}...")
-                    
-                    # Execute each statement
                     connection.execute(text(statement))
-                    
                 except SQLAlchemyError as e:
+                    # Log the specific batch error but continue
                     logging.warning(f"Error executing batch #{i+1}: {str(e)}")
-                    # For database setup, we might want to continue with other statements
-                    # instead of failing completely, especially for idempotent scripts
+                   
         
-        logging.info("Database schema creation completed successfully")
-        return True
+        success_msg = "Database schema creation completed successfully"
+        logging.info(success_msg)
+        return True, success_msg
         
     except SQLAlchemyError as e:
         error_trace = traceback.format_exc()
-        logging.error(f"Database error: {str(e)}")
+        error_msg = f"Database error during setup: {str(e)}"
+        logging.error(error_msg)
         logging.error(error_trace)
         
         # Send email notification of the failure
@@ -241,11 +239,13 @@ def execute_script(script_content, force=False):
                 error_trace
             )
         
-        return False
+        
+        return False, error_msg 
         
     except Exception as e:
         error_trace = traceback.format_exc()
-        logging.error(f"Unexpected error: {str(e)}")
+        error_msg = f"Unexpected error during database setup: {str(e)}"
+        logging.error(error_msg)
         logging.error(error_trace)
         
         # Send email notification of the failure
@@ -253,65 +253,42 @@ def execute_script(script_content, force=False):
             Config.send_error_email(
                 "Database Setup",
                 "Database Creation Failed",
-                f"Unexpected error during database setup: {str(e)}",
+                f"Error creating database schema: {str(e)}",
                 error_trace
             )
-        
-        return False
+       
+        return False, error_msg 
 
 def main():
     """Main function to execute the database setup"""
-    # Set up logging
     log_file = setup_logging()
-    
-    # Parse command line arguments
     args = parse_args()
     
     try:
-        # Initialize Config to load environment variables
         Config.load_credentials()
         
-        # If force flag is set, check if database exists and ask for confirmation first
-        if args.force:
-            try:
-                engine = get_database_engine()
-                with engine.connect() as connection:
-                    result = connection.execute(text("SELECT name FROM master.dbo.sysdatabases WHERE name = 'data_cycle_db'"))
-                    if result.scalar():
-                        # Database exists, ask for confirmation
-                        print("\n⚠️ WARNING: You're about to drop and recreate the 'data_cycle_db' database.")
-                        print("All existing data will be permanently lost!")
-                        confirm = input("\nAre you sure you want to continue? (y/N): ")
-                        if confirm.lower() != 'y':
-                            logging.info("Database recreation canceled by user.")
-                            print("\n❌ Database recreation canceled.")
-                            return 1
-                        print("\n🔄 Proceeding with database recreation...")
-            except Exception as e:
-                logging.error(f"Error checking database existence: {str(e)}")
-                # Continue anyway - if we can't check, we'll let the script try to run
-        
-        # Read SQL script
         script_content = read_sql_script()
         
-        # Execute script
-        success = execute_script(script_content, args.force)
+        # Execute script and get status and message
+        success, message = execute_script(script_content, args.force)
         
         if success:
-            logging.info("Database setup completed successfully")
-            print(f"✅ Database setup completed successfully. See log file for details: {log_file}")
+            logging.info("Database setup process finished successfully.")
+            # Use the success message from execute_script
+            print(f"✅ {message}. See log file for details: {log_file}")
             return 0
         else:
-            logging.warning("Database setup completed with warnings or errors")
-            print(f"⚠️ Database setup completed with warnings or errors. Check the log file: {log_file}")
+            # Use the specific warning/error message from execute_script
+            logging.warning(f"Database setup process finished with warnings or errors: {message}")
+            print(f"WARNING/ERROR: {message}. Check the log file for details: {log_file}")
             return 1
             
     except Exception as e:
+        # Catch errors from load_credentials, read_sql_script, etc.
         error_trace = traceback.format_exc()
         logging.error(f"Setup failed: {str(e)}")
         logging.error(error_trace)
-        print(f"❌ Database setup failed: {str(e)}")
-        print(f"See log file for details: {log_file}")
+        print(f"ERROR: Database setup failed: {str(e)}")
         return 1
 
 if __name__ == "__main__":
