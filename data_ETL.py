@@ -10,7 +10,9 @@ from ETL.Fact.ETL_process_Temperature_Humidity_Consumption import populate_dim_t
 from ETL.Fact.ETL_process_Solar import populate_dim_tables_and_facts as run_solar_etl
 from ETL.Fact.ETL_process_RoomAllocation import populate_dim_tables_and_facts as run_room_allocation_etl
 from ETL.Fact.ETL_process_Meteo import populate_dim_tables_and_facts as run_meteo_etl
+from ETL.Fact.ETL_dummy_prediction import run_dummy_prediction_etl as run_prediction_etl
 from ETL.utils.logging_utils import setup_logging, send_error_summary
+
 
 # Set up logging using the same approach as the Meteo ETL process
 log_file = setup_logging("ETL_Main")
@@ -42,6 +44,11 @@ def run_etl():
         logger.info("Meteo ETL process completed")
         
         logger.info("All ETL processes completed successfully")
+        
+        # Run Prediction ETL
+        logger.info("Starting Prediction ETL process")
+        run_prediction_etl()
+        logger.info("Prediction ETL process completed")
         return True
         
     except Exception as e:
