@@ -33,7 +33,7 @@ def set_credentials_from_env():
     
     # Verify that all required credentials are present
     if not all([username, password, email_username, email_password]):
-        print("❌ Required credentials are not all defined in the .env file")
+        print("ERROR: Required credentials are not all defined in the .env file")
         print("Make sure DATA_USERNAME, DATA_PASSWORD, GOOGLE_EMAIL_SENDER and APP_PASSWORD_GOOGLE_PASSWORD (or GOOGLE_EMAIL_PASSWORD) are defined.")
         return 1
     
@@ -60,7 +60,7 @@ def set_credentials_from_env():
     if success1:
         print(f"✅ Login credentials for '{username}' successfully saved!")
     else:
-        print(f"❌ Failed to save credentials for '{username}'")
+        print(f"ERROR: Failed to save credentials for '{username}'")
         return 1
     
     # Save email credentials
@@ -68,7 +68,7 @@ def set_credentials_from_env():
     if success2:
         print(f"✅ Email credentials for '{email_username}' successfully saved!")
     else:
-        print(f"❌ Failed to save email credentials for '{email_username}'")
+        print(f"ERROR: Failed to save email credentials for '{email_username}'")
         return 1
     
     # 2. Create or update the .env file (removing all sensitive info)

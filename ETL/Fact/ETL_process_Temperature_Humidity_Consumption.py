@@ -5,17 +5,18 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
+
+import sys
+# Add parent directory to path to make ETL a proper package import
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 from ETL.utils.logging_utils import log_error, setup_logging, send_error_summary
 from ETL.db.base import get_session, init_db
 from ETL.db.models import FactEnergyConsumption
 from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
-from config import ensure_installed, Config
+from config import Config
 from ETL.db.models import DimDate, DimTime
-
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 # Define subfolder structure
 SUBFOLDERS = {

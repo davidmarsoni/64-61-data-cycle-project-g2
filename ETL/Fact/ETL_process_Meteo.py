@@ -11,12 +11,8 @@ from ETL.db.models import FactMeteoSwissData
 from ETL.Dim.DimDate import get_or_create_date
 from ETL.Dim.DimTime import get_or_create_time
 from ETL.Dim.DimSite import get_or_create_site
-from config import ensure_installed, Config
+from config import Config
 from ETL.db.models import DimDate, DimTime, DimSite
-
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('sqlalchemy')
 
 SUBFOLDERS = {
     "Meteo": ["Pred"]
@@ -123,7 +119,7 @@ def process_meteo_files(session, meteo_folder):
         # Fetch all sites from dimension table
         all_sites = {}
         for site in session.query(DimSite).all():
-            all_sites[site.siteName] = site.id_site
+            all_sites[site.site_name] = site.id_site
         logging.info(f"Preloaded {len(all_sites)} sites")
         
         # Create a dictionary for existing records to enable updates

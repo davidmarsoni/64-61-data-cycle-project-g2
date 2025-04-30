@@ -36,33 +36,33 @@ CREATE TABLE DimTime (
 
 CREATE TABLE DimRoom (
     id_room INT PRIMARY KEY IDENTITY(1,1),
-    roomName VARCHAR(255) NOT NULL
+    room_name VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimUser (
     id_user INT PRIMARY KEY IDENTITY(1,1),
-    userName VARCHAR(255) NOT NULL
+    username VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimActivity (
     id_activity INT PRIMARY KEY IDENTITY(1,1),
-    activityName VARCHAR(255) NOT NULL
+    activity_name VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimBookingType (
     id_booking_type INT PRIMARY KEY IDENTITY(1,1),
     code VARCHAR(50) NOT NULL,
-    bookingType VARCHAR(100) NOT NULL
+    booking_type VARCHAR(100) NOT NULL
 );
 
 CREATE TABLE DimDivision (
     id_division INT PRIMARY KEY IDENTITY(1,1),
-    divisionName VARCHAR(255) NOT NULL
+    division_name VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimClassroom (
     id_classroom INT PRIMARY KEY IDENTITY(1,1),
-    classroomName VARCHAR(255) NOT NULL
+    classroom_name VARCHAR(255) NOT NULL
 );
 
 -- ==============================
@@ -71,12 +71,12 @@ CREATE TABLE DimClassroom (
 
 CREATE TABLE DimInverter (
     id_inverter INT PRIMARY KEY IDENTITY(1,1),
-    inverterName VARCHAR(255) NOT NULL
+    inverter_name VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE DimStatus (
     id_status INT PRIMARY KEY IDENTITY(1,1),
-    statusName VARCHAR(255) NOT NULL
+    status_name VARCHAR(255) NOT NULL
 );
 
 -- ==============================
@@ -84,7 +84,7 @@ CREATE TABLE DimStatus (
 -- ==============================
 CREATE TABLE DimSite (
     id_site INT PRIMARY KEY IDENTITY(1,1),
-    siteName VARCHAR(255) NOT NULL
+    site_name VARCHAR(255) NOT NULL
 );
 
 -- ==============================

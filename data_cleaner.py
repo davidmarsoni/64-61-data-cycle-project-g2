@@ -8,12 +8,9 @@ import sys
 import traceback
 
 # Import from config file
-from config import ensure_installed, Config
+from config import Config
 
-# Ensure required packages are installed
-ensure_installed('pandas')
-ensure_installed('chardet')
-ensure_installed('python-dotenv')
+
 
 # Import utilities from the clean.utils module
 from clean.utils import log_error, detect_encoding, error_log
