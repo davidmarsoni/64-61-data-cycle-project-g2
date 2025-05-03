@@ -33,6 +33,9 @@ def generate_dummy_prediction_data(start_date=None, days=1):
         start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     else:
         start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+    # Set the year to 2023 while keeping current month and days
+    start_date = start_date.replace(year=2023)
     
     logging.info(f"Generating dummy prediction data starting from {start_date.strftime('%Y-%m-%d')} for {days} days")
     
@@ -236,6 +239,9 @@ def run_dummy_prediction_etl(start_date=None, days_to_generate=1):
         # --- Generate Dummy Data ---
         if start_date is None:
             start_date = datetime.now()
+        
+        # Set the year to 2023 while preserving current day and month
+        start_date = start_date.replace(year=2023)
             
         logging.info(f"Generating dummy data for {days_to_generate} days starting from {start_date.strftime('%Y-%m-%d')}")
         consumption_df, production_df = generate_dummy_prediction_data(start_date, days_to_generate)
@@ -260,10 +266,11 @@ def run_dummy_prediction_etl(start_date=None, days_to_generate=1):
 
 
 if __name__ == "__main__":
-    # Default: Generate predictions for today only
+    # Default: Generate predictions for today only (with year 2023)
     run_dummy_prediction_etl()
     
     # Example of generating predictions for multiple days:
     # Custom start date (e.g., tomorrow) and multiple days
+    # Note: Year will always be set to 2023 regardless of the input date
     # tomorrow = datetime.now() + timedelta(days=1)
     # run_dummy_prediction_etl(start_date=tomorrow, days_to_generate=7)
