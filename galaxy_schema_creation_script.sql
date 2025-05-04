@@ -114,7 +114,7 @@ CREATE TABLE FactBookings (
     FOREIGN KEY (id_user) REFERENCES DimUser(id_user),
     FOREIGN KEY (id_professor) REFERENCES DimUser(id_user),
     FOREIGN KEY (id_classroom) REFERENCES DimClassRoom(id_classroom),
-    FOREIGN KEY (id_booking_type) REFERENCES DimBookingType(id_bookingType),
+    FOREIGN KEY (id_booking_type) REFERENCES DimBookingType(id_booking_type),
     FOREIGN KEY (id_division) REFERENCES DimDivision(id_division),
     FOREIGN KEY (id_activity) REFERENCES DimActivity(id_activity)
 );
