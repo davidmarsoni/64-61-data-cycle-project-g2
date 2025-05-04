@@ -106,7 +106,7 @@ CREATE TABLE FactBookings (
     is_active BIT NOT NULL DEFAULT 1,
     last_modified DATETIME NOT NULL DEFAULT GETDATE(),
     external_id VARCHAR(255) NULL,
-
+ 
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time_start) REFERENCES DimTime(id_time),
     FOREIGN KEY (id_time_end) REFERENCES DimTime(id_time),
