@@ -149,8 +149,8 @@ CREATE TABLE FactPrediction (
     id_prediction_weather INT PRIMARY KEY IDENTITY(1,1),
     id_date INT NOT NULL,
     id_time INT NOT NULL,
-    predicted_consumption FLOAT NOT NULL,
-    predicted_production FLOAT NOT NULL,
+    predicted_consumption FLOAT NULL,
+    predicted_production FLOAT NULL,
     FOREIGN KEY (id_date) REFERENCES DimDate(id_date),
     FOREIGN KEY (id_time) REFERENCES DimTime(id_time)
 );
