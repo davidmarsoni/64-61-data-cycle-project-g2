@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
 from joblib import dump, load
+import pickle
+import re, glob
 
 # Models
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
@@ -19,65 +21,176 @@ import lightgbm as lgb
 # Functions for loading data
 # ----------------------------------
 
-def get_directories(data_date=None):
-    """
-    Returns the directories for meteo, consumption, and room allocation data.
-    """
+import os, glob, re
+from datetime import datetime, timedelta
+
+def get_directories(data_date=None, exclude_last_n=3):
     if data_date is None:
         data_date = datetime.today().strftime('%Y-%m-%d')
-    
-    base_dir = os.getenv('BASE_DIR', 'C:/DataCollection')
-    meteo_dir = os.path.join(base_dir, f'cleaned_data_{data_date}/Meteo')
-    conso_dir = os.path.join(base_dir, f'cleaned_data_{data_date}/BellevueConso')
-    room_dir = os.path.join(base_dir, f'cleaned_data_{data_date}/BellevueBooking')
-    
+    ref_dt = datetime.strptime(data_date, '%Y-%m-%d')
+
+    base_dir = os.getenv('BASE_DIR', r'C:\DataCollection')
+    pattern  = os.path.join(base_dir, 'cleaned_data_*')
+    all_dirs = glob.glob(pattern)
+
+    def extract_dt(p):
+        m = re.search(r'cleaned_data_(\d{4}-\d{2}-\d{2})$', p)
+        return datetime.strptime(m.group(1), '%Y-%m-%d') if m else None
+
+    # [(path, date)] 
+    dated = sorted(
+        [(p, extract_dt(p)) for p in all_dirs if extract_dt(p) is not None],
+        key=lambda x: x[1]
+    )
+
+    # Ne garder que ceux <= (ref_dt - exclude_last_n jours)
+    cutoff = ref_dt - timedelta(days=exclude_last_n)
+    filtered = [p for p, d in dated if d <= cutoff]
+
+    # Construire les listes de sous-dossiers
+    all_conso_dirs = []
+    all_meteo_dirs = []
+    all_room_dirs  = []
+    for d in filtered:
+        if os.path.isdir(os.path.join(d, 'BellevueConso')):
+            all_conso_dirs.append(os.path.join(d, 'BellevueConso'))
+        if os.path.isdir(os.path.join(d, 'Meteo')):
+            all_meteo_dirs.append(os.path.join(d, 'Meteo'))
+        if os.path.isdir(os.path.join(d, 'BellevueBooking')):
+            all_room_dirs.append(os.path.join(d, 'BellevueBooking'))
+
+    specific = os.path.join(base_dir, f'cleaned_data_{data_date}')
     return {
         'base_dir': base_dir,
-        'meteo_dir': meteo_dir,
-        'conso_dir': conso_dir,
-        'room_dir': room_dir
+        'specific_data_dir': specific,
+        'all_conso_dirs': all_conso_dirs,
+        'all_meteo_dirs': all_meteo_dirs,
+        'all_room_dirs':  all_room_dirs,
+        'conso_dir':  os.path.join(specific, 'BellevueConso'),
+        'meteo_dir':  os.path.join(specific, 'Meteo'),
+        'room_dir':   os.path.join(specific, 'BellevueBooking'),
     }
 
-def load_csv_files(directory, file_pattern=None):
+
+def load_csv_files(directories, file_pattern=None, cutoff_date=None):
     """
-    Loads multiple CSV files from a directory with optional pattern filtering.
+    Loads multiple CSV files from multiple directories with optional pattern filtering and date filtering.
+    
+    Parameters:
+        directories (list): List of directory paths to search for CSV files
+        file_pattern (str, optional): Pattern to match in filenames
+        cutoff_date (datetime, optional): Cutoff date for filtering data
+        
+    Returns:
+        DataFrame: Combined data from all matching CSV files
     """
+   
+    
+    
     all_data = []
+    files_processed = 0
+    files_skipped = 0
     
-    if not os.path.exists(directory):
-        print(f"Warning: Directory {directory} does not exist.")
-        return pd.DataFrame()
-    
-    
-    for filename in os.listdir(directory):
-        if not filename.endswith('.csv'):
+    for directory in directories:
+        if not os.path.exists(directory):
+            print(f"Warning: Directory {directory} does not exist.")
             continue
             
-        if file_pattern and file_pattern not in filename:
-            continue
-            
-        file_path = os.path.join(directory, filename)
-        df = None
+        print(f"Scanning directory: {directory}")
         
-        encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
-        
-        for encoding in encodings:
+        # Extract date from directory name if possible
+        dir_date = None
+        date_match = re.search(r'cleaned_data_(\d{4}-\d{2}-\d{2})', directory)
+        if date_match:
             try:
-                if 'RoomAllocations' in filename:
-                    df = pd.read_csv(file_path, encoding=encoding, low_memory=False)
-                else:
-                    df = pd.read_csv(file_path, encoding=encoding)
+                dir_date = datetime.strptime(date_match.group(1), '%Y-%m-%d')
+                print(f"  Directory date: {dir_date.date()}")
                 
-                df['source_file'] = filename
-                
-                all_data.append(df)
-                print(f"Loaded {filename} with encoding {encoding}, {len(df)} rows")
-                break 
-            except UnicodeDecodeError:
+                # Skip directory if it's beyond cutoff date
+                if cutoff_date is not None and dir_date > cutoff_date:
+                    print(f"  Skipping directory (beyond cutoff date): {directory}")
+                    files_skipped += 1
+                    continue
+            except ValueError:
+                pass
+        
+        for filename in os.listdir(directory):
+            if not filename.endswith('.csv'):
                 continue
-            except Exception as e:
-                print(f"Error loading {filename}: {e}")
-                break
+                
+            if file_pattern and file_pattern not in filename:
+                continue
+            
+            # Extract date from filename if possible
+            file_date = None
+            file_date_patterns = [
+                r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
+                r'(\d{4})(\d{2})(\d{2})'  # YYYYMMDD
+            ]
+            
+            for pattern in file_date_patterns:
+                match = re.search(pattern, filename)
+                if match:
+                    try:
+                        if len(match.groups()) == 1:
+                            file_date = datetime.strptime(match.group(1), '%Y-%m-%d')
+                        elif len(match.groups()) == 3:
+                            year, month, day = match.groups()
+                            file_date = datetime(int(year), int(month), int(day))
+                        
+                        # Skip file if it's beyond cutoff date
+                        if cutoff_date is not None and file_date > cutoff_date:
+                            print(f"  Skipping file (beyond cutoff date): {filename}")
+                            files_skipped += 1
+                            continue
+                    except ValueError:
+                        pass
+                    break
+            
+            file_path = os.path.join(directory, filename)
+            df = None
+            
+            # Try multiple encodings
+            encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
+            
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(file_path, encoding=encoding)
+                    
+                    df['source_file'] = filename
+                    df['source_dir'] = directory
+                    
+                    # Apply date cutoff if the file has date/time columns
+                    if cutoff_date is not None and 'date' in df.columns and 'time' in df.columns:
+                        # Create datetime column
+                        df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
+                        
+                        # Filter rows by cutoff date
+                        original_count = len(df)
+                        df = df[df['datetime'] <= cutoff_date]
+                        filtered_count = len(df)
+                        
+                        if filtered_count < original_count:
+                            print(f"  Filtered {filename}: removed {original_count - filtered_count} rows after cutoff date")
+                        
+                        # Skip empty dataframes after filtering
+                        if df.empty:
+                            print(f"  Skipping {filename} - all data is beyond cutoff date")
+                            files_skipped += 1
+                            break
+                    
+                    all_data.append(df)
+                    files_processed += 1
+                    print(f"  Loaded {filename} with encoding {encoding}, {len(df)} rows")
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    print(f"  Error loading {filename}: {e}")
+                    break
+    
+    print(f"Files processed: {files_processed}")
+    print(f"Files skipped due to date filtering: {files_skipped}")
     
     if not all_data:
         print("No matching files found.")
@@ -86,19 +199,37 @@ def load_csv_files(directory, file_pattern=None):
     # Combine dataframes
     combined_df = pd.concat(all_data, ignore_index=True)
     
+    # Final cutoff filter on combined data
+    if cutoff_date is not None and 'datetime' in combined_df.columns:
+        original_count = len(combined_df)
+        combined_df = combined_df[combined_df['datetime'] <= cutoff_date]
+        filtered_count = len(combined_df)
+        
+        if filtered_count < original_count:
+            print(f"Final filter: removed {original_count - filtered_count} rows beyond cutoff date {cutoff_date}")
+    
     return combined_df
 
-def load_consumption_data(consumption_df):
+def load_consumption_data(directories, cutoff_date=None):
     """
-    Prepares energy consumption data.
+    Prepares energy consumption data from multiple directories.
+    
+    Parameters:
+        directories (list): List of directories to scan for consumption files
+        cutoff_date (datetime, optional): Cutoff date for filtering data
+        
+    Returns:
+        DataFrame: Prepared consumption data
     """
+    # Load CSV files from all directories
+    consumption_df = load_csv_files(directories, file_pattern='Consumption', cutoff_date=cutoff_date)
+    
+    if consumption_df.empty:
+        print("Warning: No consumption data found.")
+        return consumption_df
+    
     # Create a copy to avoid modifying the original DataFrame
     df = consumption_df.copy()
-    
-    
-    if df.empty:
-        print("Warning: The consumption dataframe is empty.")
-        return df
     
     # Standardize column names (lowercase)
     df.columns = [col.lower() for col in df.columns]
@@ -111,41 +242,63 @@ def load_consumption_data(consumption_df):
         print(f"Warning: Required columns missing in consumption data: {missing_cols}")
         return pd.DataFrame()
     
-   
-    df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
+    # Ensure datetime column exists
+    if 'datetime' not in df.columns:
+        df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
     
-    
+    # Remove rows with invalid dates
     invalid_dates = df['datetime'].isna()
     if invalid_dates.any():
         print(f"Warning: Removing {invalid_dates.sum()} rows with invalid datetime")
         df = df[~invalid_dates].copy()
     
+    # Final cutoff date filtering
+    if cutoff_date is not None:
+        original_count = len(df)
+        df = df[df['datetime'] <= cutoff_date]
+        filtered_count = len(df)
+        if filtered_count < original_count:
+            print(f"Final consumption data filter: removed {original_count - filtered_count} rows beyond cutoff date")
     
+    # Rename 'value' column to 'consumption'
     df = df.rename(columns={'value': 'consumption'})
     
+    # Set datetime as index and sort
     df = df.set_index('datetime').sort_index()
     
+    # Return only the consumption column
     return df[['consumption']]
 
-def load_prediction_weather_data(pred_files, select_highest_prediction=True):
+def load_prediction_weather_data(directories, cutoff_date=None, select_highest_prediction=True):
     """
-    Loads and processes weather prediction data.
+    Loads and processes weather prediction data from multiple directories.
+    
+    Parameters:
+        directories (list): List of directories to scan for weather prediction files
+        cutoff_date (datetime, optional): Cutoff date for filtering data
+        select_highest_prediction (bool): Whether to select the most recent prediction for each hour
+        
+    Returns:
+        DataFrame: Processed weather prediction data
     """
+    # Load CSV files from all directories
+    pred_files = load_csv_files(directories, file_pattern='Pred_', cutoff_date=cutoff_date)
+    
     if pred_files.empty:
-        print("Warning: The prediction dataframe is empty.")
-        return pd.DataFrame()
+        print("Warning: No weather prediction data found.")
+        return pred_files
     
     try:
         df = pred_files.copy()
         
-        # Standardize column names (lowercase)
+        # Display original columns for verification
         original_columns = df.columns.tolist()
-        print(f"Original columns : {original_columns}")
+        print(f"Original meteo columns: {original_columns}")
         
-        # Standardize column names to lowercase
+        # Standardize column names (lowercase)
         df.columns = [col.lower() for col in df.columns]
         
-        # Check for required columns
+        # Check for required columns with the EXACT structure you have
         column_mapping = {
             'pred_t_2m_ctrl': 'temperature',
             'pred_relhum_2m_ctrl': 'humidity',
@@ -153,50 +306,118 @@ def load_prediction_weather_data(pred_files, select_highest_prediction=True):
             'pred_glob_ctrl': 'global_radiation'
         }
         
+        # Verify columns after lowercase conversion
+        print(f"Meteo columns after lowercase: {df.columns.tolist()}")
+        
+        # Perform column mapping
         for old_name, new_name in column_mapping.items():
             if old_name in df.columns:
                 df = df.rename(columns={old_name: new_name})
+                print(f"Renamed column {old_name} to {new_name}")
         
-        # Create a datetime column from date and time
+        # Verify date and time columns
         if 'date' in df.columns and 'time' in df.columns:
-            # Convert date and time to datetime
-            df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
+            print(f"Sample date values: {df['date'].head().tolist()}")
+            print(f"Sample time values: {df['time'].head().tolist()}")
             
-            # check if we have prediciton column
+            # Convert date and time to datetime
+            try:
+                # First attempt with standard format
+                df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
+                print(f"First attempt datetime conversion: {df['datetime'].head()}")
+            except Exception as e:
+                print(f"Error in first datetime conversion attempt: {e}")
+                try:
+                    # Second attempt with format adjustment
+                    df['datetime'] = pd.to_datetime(pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d') + ' ' + df['time'], errors='coerce')
+                    print(f"Second attempt datetime conversion: {df['datetime'].head()}")
+                except Exception as e:
+                    print(f"Error in second datetime conversion attempt: {e}")
+                    return pd.DataFrame()
+            
+            # Remove rows with invalid dates
+            invalid_dates = df['datetime'].isna()
+            if invalid_dates.any():
+                print(f"Warning: Found {invalid_dates.sum()} invalid datetime entries")
+                df = df[~invalid_dates].copy()
+            
+            # Apply cutoff date filtering
+            if cutoff_date is not None:
+                original_count = len(df)
+                df = df[df['datetime'] <= cutoff_date]
+                filtered_count = len(df)
+                if filtered_count < original_count:
+                    print(f"Final weather pred filter: removed {original_count - filtered_count} rows beyond cutoff date")
+            
+            # Handle prediction column and filter by most recent predictions
             if 'prediction' in df.columns and select_highest_prediction:
-                print("Sélection des prédictions les plus récentes (valeur 'prediction' la plus élevée)...")
+                print("Selecting most recent predictions (highest 'prediction' value)...")
                 
-               
                 total_pred_count = len(df)
                 
                 idx = df.groupby('datetime')['prediction'].idxmax().tolist()
                 df_filtered = df.loc[idx]
                 
                 if df_filtered.empty:
-                    print("Avertissement: Aucune prédiction valide trouvée après regroupement")
+                    print("Warning: No valid predictions found after grouping")
                     return pd.DataFrame()
-                
                 
                 df = df_filtered.copy()
                 
                 filtered_pred_count = len(df)
-                print(f"Nombre de prédictions réduit de {total_pred_count} à {filtered_pred_count} (sélection des plus récentes pour chaque heure)")
+                print(f"Reduced predictions from {total_pred_count} to {filtered_pred_count} (selecting most recent for each hour)")
             
+            # Set datetime as index and sort
             df = df.set_index('datetime').sort_index()
             
+            # Check available weather columns
             weather_cols = ['temperature', 'humidity', 'precipitation', 'global_radiation']
             available_cols = [col for col in weather_cols if col in df.columns]
             
+            # If no mapped columns found, try with original column names
             if not available_cols:
-                print("Avertissement: Aucune colonne météo pertinente trouvée.")
+                print("No weather columns found after mapping, trying original column names...")
+                
+                # Try to detect weather columns directly
+                potential_weather_cols = [col for col in df.columns if 
+                                         any(s in col.lower() for s in ['temp', 'hum', 'prec', 'glob', 'ctrl'])]
+                
+                if potential_weather_cols:
+                    print(f"Found potential weather columns: {potential_weather_cols}")
+                    
+                    # Mapping based on keywords in column names
+                    if any('t_2m' in col.lower() or 'temp' in col.lower() for col in potential_weather_cols):
+                        temp_col = next(col for col in potential_weather_cols if 't_2m' in col.lower() or 'temp' in col.lower())
+                        df['temperature'] = df[temp_col]
+                        available_cols.append('temperature')
+                    
+                    if any('hum' in col.lower() for col in potential_weather_cols):
+                        hum_col = next(col for col in potential_weather_cols if 'hum' in col.lower())
+                        df['humidity'] = df[hum_col]
+                        available_cols.append('humidity')
+                    
+                    if any('prec' in col.lower() for col in potential_weather_cols):
+                        prec_col = next(col for col in potential_weather_cols if 'prec' in col.lower())
+                        df['precipitation'] = df[prec_col]
+                        available_cols.append('precipitation')
+                    
+                    if any('glob' in col.lower() for col in potential_weather_cols):
+                        glob_col = next(col for col in potential_weather_cols if 'glob' in col.lower())
+                        df['global_radiation'] = df[glob_col]
+                        available_cols.append('global_radiation')
+            
+            if not available_cols:
+                print("Warning: No relevant weather columns found.")
                 return pd.DataFrame()
             
+            print(f"Found weather columns: {available_cols}")
             weather_df = df[available_cols].copy()
             
+            # Create derived columns
             if 'temperature' in weather_df.columns:
+                print(f"Temperature column summary: min={weather_df['temperature'].min()}, max={weather_df['temperature'].max()}")
                 weather_df.loc[:, 'heating_degree'] = weather_df['temperature'].apply(lambda x: max(18.0 - x, 0))
                 weather_df.loc[:, 'cooling_degree'] = weather_df['temperature'].apply(lambda x: max(x - 22.0, 0))
-                
                 
                 weather_df.loc[:, 'temp_change_1h'] = weather_df['temperature'].diff()
                 
@@ -218,10 +439,12 @@ def load_prediction_weather_data(pred_files, select_highest_prediction=True):
                 if len(weather_df) >= 24:
                     weather_df.loc[:, 'precipitation_24h'] = weather_df['precipitation'].rolling(window=24, min_periods=1).sum()
             
+            print(f"Final weather DataFrame shape: {weather_df.shape}")
+            print(f"Weather index sample: {weather_df.index[:5]}")
             return weather_df
             
         else:
-            print("Warning : No 'date' or 'time' columns found in prediction data") 
+            print(f"Warning: No 'date' or 'time' columns found in prediction data. Columns: {df.columns.tolist()}")
             return pd.DataFrame()
     
     except Exception as e:
@@ -233,6 +456,7 @@ def load_prediction_weather_data(pred_files, select_highest_prediction=True):
 def load_room_allocation_data_hourly(directory):
     """
     Load room allocation data and transform it into an hourly DataFrame
+    Adapted for the new CSV format
     """
     try:
         if not os.path.exists(directory):
@@ -250,7 +474,7 @@ def load_room_allocation_data_hourly(directory):
         latest_file = room_files[0]
         file_path = os.path.join(directory, latest_file)
         
-        print(f"Treating allocation files: {latest_file}")
+        print(f"Treating allocation file: {latest_file}")
         
         encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
         df = None
@@ -266,7 +490,6 @@ def load_room_allocation_data_hourly(directory):
                 print(f"Error when loading {latest_file}: {e}")
                 return pd.DataFrame()
         
-    
         if df is None:
             print(f"Unable to load {latest_file} with available encodings.")
             return pd.DataFrame()
@@ -275,8 +498,9 @@ def load_room_allocation_data_hourly(directory):
         
         print(f"Columns available: {df.columns.tolist()}")
         
-    
-        if 'date' in df.columns and 'date_de_debut' in df.columns and 'date_de_fin' in df.columns:
+        # Check if we have the expected columns for the new format
+        if 'date' in df.columns and 'start_time' in df.columns and 'end_time' in df.columns:
+            # Convert date to datetime
             df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d', errors='coerce')
             
             df = df.dropna(subset=['date'])
@@ -292,12 +516,11 @@ def load_room_allocation_data_hourly(directory):
                 except:
                     return None
             
-            df['heure_debut_decimal'] = df['date_de_debut'].apply(parse_time)
-            df['heure_fin_decimal'] = df['date_de_fin'].apply(parse_time)
+            df['heure_debut_decimal'] = df['start_time'].apply(parse_time)
+            df['heure_fin_decimal'] = df['end_time'].apply(parse_time)
             
             df = df.dropna(subset=['heure_debut_decimal', 'heure_fin_decimal'])
             
-           
             min_date = df['date'].min()
             max_date = df['date'].max()
             
@@ -312,7 +535,8 @@ def load_room_allocation_data_hourly(directory):
             
             room_counts = []
             
-            total_rooms = len(df['nom'].unique())
+            # Use room_name instead of nom
+            total_rooms = len(df['room_name'].unique())
             
             for dt in hourly_index:
                 date = dt.date()
@@ -348,17 +572,165 @@ def load_room_allocation_data_hourly(directory):
             result_df['is_high_occupation'] = (result_df['occupation_rate'] > high_threshold).astype(int)
             result_df['is_low_occupation'] = (result_df['occupation_rate'] < low_threshold).astype(int)
             
+            # Add more features based on the additional data available
+            if 'activity' in df.columns:
+                # Create hourly course activity stats
+                for dt in hourly_index:
+                    date = dt.date()
+                    hour = dt.hour
+                    
+                    hour_reservations = df[
+                        (df['date'].dt.date == date) & 
+                        (df['heure_debut_decimal'] <= hour) & 
+                        (df['heure_fin_decimal'] > hour)
+                    ]
+                    
+                    # Count courses vs other activities
+                    courses_count = sum(hour_reservations['activity'].str.lower() == 'cours') if not hour_reservations.empty else 0
+                    
+                    # Add to the dataframe
+                    result_df.loc[dt, 'course_count'] = courses_count
+                
+                # Calculate course ratio
+                result_df['course_ratio'] = result_df['course_count'] / result_df['rooms_occupied'].replace(0, 1)
+                result_df['is_course_heavy'] = (result_df['course_ratio'] > 0.7).astype(int)
+            
+            # Add division statistics if available
+            if 'division' in df.columns:
+                divisions = df['division'].dropna().unique()
+                
+                for division in divisions:
+                    if not isinstance(division, str):
+                        continue
+                        
+                    division_name = division.lower().replace(' ', '_').replace('é', 'e').replace('è', 'e').replace('à', 'a')
+                    
+                    # Create hourly division counts
+                    for dt in hourly_index:
+                        date = dt.date()
+                        hour = dt.hour
+                        
+                        hour_reservations = df[
+                            (df['date'].dt.date == date) & 
+                            (df['heure_debut_decimal'] <= hour) & 
+                            (df['heure_fin_decimal'] > hour)
+                        ]
+                        
+                        # Count this division's reservations
+                        division_count = sum(hour_reservations['division'] == division) if not hour_reservations.empty else 0
+                        
+                        # Add to the dataframe
+                        result_df.loc[dt, f'{division_name}_count'] = division_count
+            
             print(f"DataFrame room occupation time created: {len(result_df)} hours")
             return result_df
         else:
-            print("Warning: Required columns 'date', 'date_de_debut', or 'date_de_fin' not found in allocation data.")
+            print("Warning: Required columns 'date', 'start_time', or 'end_time' not found in allocation data.")
+            print(f"Available columns: {df.columns.tolist()}")
             return pd.DataFrame()
             
     except Exception as e:
-        print(f"Error while processing rooom allocation data: {e}")
+        print(f"Error while processing room allocation data: {e}")
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
+    
+
+def plot_correlation_matrix(data, title="Correlation Matrix"):
+    """
+    Create and display a correlation matrix for the input data.
+    
+    Parameters:
+        data (DataFrame): Input dataframe containing variables to correlate
+        title (str): Plot title
+    """
+    # Select only numeric columns for correlation
+    numeric_data = data.select_dtypes(include=[np.number])
+    
+    # Calculate correlation matrix
+    corr_matrix = numeric_data.corr()
+    
+    # Create a mask for the upper triangle
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+    
+    # Set up the matplotlib figure
+    plt.figure(figsize=(12, 10))
+    
+    # Create a custom diverging colormap
+    cmap = sns.diverging_palette(230, 20, as_cmap=True)
+    
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(
+        corr_matrix, 
+        mask=mask,
+        cmap=cmap, 
+        vmax=1, 
+        vmin=-1, 
+        center=0,
+        square=True, 
+        linewidths=.5, 
+        annot=True,
+        fmt=".2f",
+        cbar_kws={"shrink": .8}
+    )
+    
+    plt.title(title, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+    
+    return corr_matrix
+
+
+def plot_feature_pairplot(data, target_col='pv_output', sample_size=None):
+    """
+    Create a pairplot to visualize relationships between features and the target variable.
+    
+    Parameters:
+        data (DataFrame): Input dataframe containing features and target
+        target_col (str): Name of the target column
+        sample_size (int, optional): Number of samples to use (for large datasets)
+    """
+    # Create a copy of the data
+    plot_data = data.copy()
+    
+    # If the dataset is large, sample it to speed up plotting
+    if sample_size is not None and sample_size < len(plot_data):
+        plot_data = plot_data.sample(sample_size, random_state=42)
+        print(f"Using {sample_size} samples for pairplot visualization.")
+    
+    # Select only the most important numeric columns to avoid cluttered plots
+    # Get columns that are likely to be important for prediction
+    key_cols = ['pred_glob_ctrl', 'pred_t_2m_ctrl', 'temperature', 'hour_sin', 'day_of_year']
+    key_cols = [col for col in key_cols if col in plot_data.columns]
+    
+    # Always include the target column
+    if target_col not in key_cols and target_col in plot_data.columns:
+        key_cols.append(target_col)
+    
+    # Check if we have enough columns
+    if len(key_cols) < 2:
+        print("Not enough columns for pairplot. Using all numeric columns.")
+        key_cols = plot_data.select_dtypes(include=[np.number]).columns.tolist()
+        if len(key_cols) > 6:  # Limit to 6 columns to avoid excessive plotting time
+            key_cols = key_cols[:6]
+    
+    # Create the pairplot
+    sns.set(style="ticks")
+    g = sns.pairplot(
+        plot_data[key_cols], 
+        hue=target_col if target_col in plot_data.columns else None,
+        corner=True,  # Only show the lower triangle
+        diag_kind="kde",
+        markers=".",
+        height=2.5,
+        plot_kws={'alpha': 0.6, 's': 30}
+    )
+    
+    g.fig.suptitle('Feature Relationships Pairplot', y=1.02, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+    
+    return g
 
 def load_academic_calendar():
     """
@@ -838,13 +1210,7 @@ def create_advanced_model(X_train, y_train, model_type='xgboost'):
     object_columns = X_train_processed.select_dtypes(include=['object']).columns.tolist()
     if object_columns:
         print(f"Converting 'object' type columns: {object_columns}")
-        for col in object_columns:
-            # If the column is empty or contains only one unique value, replace with 0
-            if X_train_processed[col].nunique() <= 1:
-                X_train_processed[col] = 0
-            # Otherwise, convert to category then to numeric codes
-            else:
-                X_train_processed[col] = X_train_processed[col].astype('category').cat.codes
+        X_train_processed = preprocess_object_columns(X_train_processed, object_columns)
     
     # Model options
     if model_type.lower() == 'xgboost':
@@ -945,7 +1311,6 @@ def create_advanced_model(X_train, y_train, model_type='xgboost'):
         'feature_importance': feature_importance,
         'model_type': model_type,
         'object_columns': object_columns,
-        'preprocess_func': preprocess_func
     }
 
 def evaluate_advanced_model(model_info, X_test, y_test):
@@ -1158,37 +1523,62 @@ def visualize_feature_importance(model_info, top_n=20):
     plt.tight_layout()
     plt.show()
 
+
+    
+
 # ----------------------------------
 # Main hourly model function
 # ----------------------------------
 
-def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs=True):
-    """
-    Improved version of the hourly granularity prediction model
-    that uses better management of room bookings.
-    
-    The model trains on hourly data, then allows
-    aggregating predictions at the daily level afterwards.
-    """
+def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs=True, visualization=False):
     print(f"Starting improved hourly prediction model with {model_type}")
     print("=" * 60)
-    
-    # Disable non-critical pandas warnings
-    pd.options.mode.chained_assignment = None
-    
-    # 1. Get directories and load data
+
+    # 1. Get directories
     dirs = get_directories(data_date)
-    
-    # Load consumption data
-    consumption_files = load_csv_files(dirs['conso_dir'], file_pattern='Consumption')
-    consumption_df = load_consumption_data(consumption_files)
-    
-    # Load weather data 
-    pred_files = load_csv_files(dirs['meteo_dir'], file_pattern='Pred_')
-    weather_df = load_prediction_weather_data(pred_files)
-    
-    # Load allocation data with the new function adapted to hourly time ranges
-    room_df = load_room_allocation_data_hourly(dirs['room_dir'])
+
+    # 2. Calcul du cutoff_dt (il faut le faire avant d’en avoir besoin)
+    if data_date is None:
+        data_date = datetime.today().strftime('%Y-%m-%d')
+    cutoff_dt = datetime.strptime(data_date, '%Y-%m-%d')
+
+    # 3. Fallback si pas de dossier de conso trouvé
+    if not dirs['all_conso_dirs']:
+        print("WARNING: No consumption dirs found before cutoff date. Using most recent available directory as fallback.")
+        base = dirs['base_dir']
+        all_cleaned = sorted(
+            glob.glob(os.path.join(base, 'cleaned_data_*')),
+            key=lambda p: datetime.strptime(
+                re.search(r'cleaned_data_(\d{4}-\d{2}-\d{2})$', p).group(1),
+                '%Y-%m-%d'
+            )
+        )
+        if all_cleaned:
+            fallback = os.path.join(all_cleaned[0], 'BellevueConso')
+            print(f"Including fallback dir: {fallback}")
+            dirs['all_conso_dirs'] = [fallback]
+        else:
+            print("ERROR: No cleaned_data_* directories found at all.")
+            return None
+
+    # 4. Chargement de la conso
+    consumption_df = load_consumption_data(
+        dirs['all_conso_dirs'],
+        cutoff_date=cutoff_dt
+    )
+
+    # 3) Chargement des prédictions météo depuis *tous* les dossiers filtrés
+    weather_df = load_prediction_weather_data(
+        dirs['all_meteo_dirs'],
+        cutoff_date=cutoff_dt
+    )
+
+    # 4) Pour les salles, on prend le dernier dossier (le plus récent avant cutoff)
+    if dirs['all_room_dirs']:
+        latest_room_dir = dirs['all_room_dirs'][-1]
+    else:
+        latest_room_dir = dirs['room_dir']
+    room_df = load_room_allocation_data_hourly(latest_room_dir)
     
     # Load academic calendar
     calendar_df = load_academic_calendar()
@@ -1199,6 +1589,24 @@ def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs
     if merged_data.empty:
         print("ERROR: Failed to merge data. Empty dataset.")
         return None
+    
+    if visualization:
+    
+        print("\nGenerating correlation matrix...")
+        corr_matrix = plot_correlation_matrix(merged_data, title="Energy Consumption - Features Correlation Matrix")
+        
+        if 'consumption' in merged_data.columns:
+            consumption_corrs = corr_matrix['consumption'].sort_values(ascending=False)
+            print("\nTop features correlated with consumption:")
+            print(consumption_corrs.head(10))
+            print("\nBottom features correlated with consumption:")
+            print(consumption_corrs.tail(5))
+        
+        print("\nGenerating pairplot of key features...")
+        plot_feature_pairplot(merged_data, target_col='consumption', sample_size=1000)
+
+
+
     
     # 3. Prepare features and target at hourly granularity
     X = merged_data.copy()
@@ -1288,259 +1696,41 @@ def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs
         'actual': daily_actual,
         'predicted': daily_pred
     }
+
+    if visualization :
     
-    # 8. Visualizations (including hourly vs daily comparisons)
-    print("\n8. Creating visualizations...")
-    
-    # Visualize hourly predictions
-    visualize_predictions(hourly_eval_results, title=f"Hourly Consumption Prediction ({model_type})")
-    
-    # Visualize feature importance
-    visualize_feature_importance(model_info, top_n=15)
-    
-    # 9. Compare hourly vs daily metrics
-    print("\n9. Comparison of hourly vs daily performance:")
-    
-    metrics_comparison = pd.DataFrame({
-        'Hourly': [
-            hourly_eval_results['metrics']['rmse'],
-            hourly_eval_results['metrics']['mae'],
-            hourly_eval_results['metrics']['r2'],
-            hourly_eval_results['metrics']['mape']
-        ],
-        'Daily (aggregated)': [
-            hourly_eval_results['daily_metrics']['rmse'],
-            hourly_eval_results['daily_metrics']['mae'],
-            hourly_eval_results['daily_metrics']['r2'],
-            hourly_eval_results['daily_metrics']['mape']
-        ]
-    }, index=['RMSE', 'MAE', 'R²', 'MAPE (%)'])
-    
-    print(metrics_comparison)
+        # 8. Visualizations (including hourly vs daily comparisons)
+        print("\n8. Creating visualizations...")
+        
+        # Visualize hourly predictions
+        visualize_predictions(hourly_eval_results, title=f"Hourly Consumption Prediction ({model_type})")
+        
+        # Visualize feature importance
+        visualize_feature_importance(model_info, top_n=15)
+        
+        # 9. Compare hourly vs daily metrics
+        print("\n9. Comparison of hourly vs daily performance:")
+        
+        metrics_comparison = pd.DataFrame({
+            'Hourly': [
+                hourly_eval_results['metrics']['rmse'],
+                hourly_eval_results['metrics']['mae'],
+                hourly_eval_results['metrics']['r2'],
+                hourly_eval_results['metrics']['mape']
+            ],
+            'Daily (aggregated)': [
+                hourly_eval_results['daily_metrics']['rmse'],
+                hourly_eval_results['daily_metrics']['mae'],
+                hourly_eval_results['daily_metrics']['r2'],
+                hourly_eval_results['daily_metrics']['mape']
+            ]
+        }, index=['RMSE', 'MAE', 'R²', 'MAPE (%)'])
+        
+        print(metrics_comparison)
     
     # 10. Create prediction function that can generate hourly predictions and aggregate them
     print("\n10. Creating hourly prediction function with flexible aggregation...")
     
-    def predict_consumption_with_aggregation(weather_df, room_df, start_date, end_date, aggregate='both'):
-        """
-        Predicts future consumption over a given period, at hourly or aggregated granularity.
-        
-        Parameters:
-            weather_df (DataFrame): Future weather data with DatetimeIndex
-            room_df (DataFrame): Future room occupancy data with DatetimeIndex
-            start_date (str): Start date in 'YYYY-MM-DD' format
-            end_date (str): End date in 'YYYY-MM-DD' format
-            aggregate (str): Aggregation type - 'hourly', 'daily', or 'both' (default)
-            
-        Returns:
-            dict: Predictions with specified aggregation levels
-        """
-        try:
-            # 1. Create a DataFrame for the prediction period
-            start = pd.Timestamp(start_date)
-            end = pd.Timestamp(end_date)
-
-            date_range = pd.date_range(start=start, end=end, freq='h')
-            prediction_df = pd.DataFrame(index=date_range)
-            prediction_df.index.name = 'datetime'
-            prediction_df.index = pd.to_datetime(prediction_df.index)  # Force index to be a DatetimeIndex
-
-            print("Before conversion, index type:", type(prediction_df.index))
-            print("prediction_df index:", prediction_df.index)
-
-            
-            print(f"Preparing predictions from {start_date} to {end_date} ({len(prediction_df)} hours)")
-            
-            # 2. Merge with weather data
-            if not weather_df.empty:
-                # Ensure index is a DatetimeIndex
-                if not isinstance(weather_df.index, pd.DatetimeIndex):
-                    hourly_results.index = pd.to_datetime(hourly_results.index)
-                    try:
-                        weather_df.index = pd.to_datetime(weather_df.index)
-                    except:
-                        print("Error: Unable to convert weather index to DatetimeIndex.")
-                        return None
-                
-                # Merge with specified suffixes
-                prediction_df = pd.merge(
-                    prediction_df,
-                    weather_df,
-                    left_index=True,
-                    right_index=True,
-                    how='left',
-                    suffixes=('', '_weather')
-                )
-                
-                # Interpolate missing values
-                for col in weather_df.columns:
-                    if col in prediction_df.columns and prediction_df[col].isna().any():
-                        prediction_df[col] = prediction_df[col].interpolate(method='time').bfill().ffill()
-
-                print("After conversion, index type:", type(prediction_df.index))
-
-            
-            # 3. Merge with room occupancy data
-            if not room_df.empty:
-                # Ensure index is a DatetimeIndex
-                if not isinstance(room_df.index, pd.DatetimeIndex):
-                    try:
-                        room_df.index = pd.to_datetime(room_df.index)
-                    except:
-                        print("Error: Unable to convert occupancy index to DatetimeIndex.")
-                        # Continue without this data
-                
-                # Merge with specified suffixes
-                if isinstance(room_df.index, pd.DatetimeIndex):
-                    prediction_df = pd.merge(
-                        prediction_df,
-                        room_df,
-                        left_index=True,
-                        right_index=True,
-                        how='left',
-                        suffixes=('', '_room')
-                    )
-                    
-                    # Fill missing values
-                    for col in room_df.columns:
-                        if col in prediction_df.columns and prediction_df[col].isna().any():
-                            if 'occupied' in col or 'occupation' in col or 'rooms' in col:
-                                prediction_df[col] = prediction_df[col].fillna(0)
-                            else:
-                                prediction_df[col] = prediction_df[col].interpolate(method='time').bfill().ffill()
-            
-            # 4. Add time features
-            prediction_df = add_enhanced_time_features(prediction_df)
-            
-            # 5. Add academic calendar information
-            if not calendar_df.empty:
-                # Extract date from index
-                prediction_df['date'] = prediction_df.index.date
-                
-                # Convert calendar_df to dictionary for fast lookup
-                calendar_dict = {}
-                cal_df_reset = calendar_df.reset_index()
-                
-                for _, row in cal_df_reset.iterrows():
-                    date_str = pd.Timestamp(row['date']).strftime('%Y-%m-%d')
-                    calendar_dict[date_str] = {col: row[col] for col in cal_df_reset.columns if col != 'date'}
-                
-                # Add calendar columns
-                for col in calendar_df.columns:
-                    if col != 'date':
-                        prediction_df[col] = prediction_df['date'].apply(
-                            lambda d: calendar_dict.get(d.strftime('%Y-%m-%d'), {}).get(col, 0 if col.startswith('is_') else '')
-                        )
-            
-            # 6. Create combined features
-            if 'temperature' in prediction_df.columns and 'is_building_open' in prediction_df.columns:
-                prediction_df['is_cold_and_occupied'] = ((prediction_df['temperature'] < 10) & 
-                                                    (prediction_df['is_building_open'] == 1)).astype(int)
-            
-            if 'is_weekend' in prediction_df.columns and 'is_holiday_period' in prediction_df.columns:
-                prediction_df['is_weekend_or_holiday'] = ((prediction_df['is_weekend'] == 1) | 
-                                                        (prediction_df['is_holiday_period'] == 1)).astype(int)
-            
-            # Room occupancy specific features
-            if 'rooms_occupied' in prediction_df.columns:
-                # Dynamically calculate high/low occupancy thresholds
-                high_threshold = prediction_df['rooms_occupied'].quantile(0.75) if not prediction_df['rooms_occupied'].empty else 10
-                low_threshold = prediction_df['rooms_occupied'].quantile(0.25) if not prediction_df['rooms_occupied'].empty else 2
-                
-                prediction_df['is_high_occupation'] = (prediction_df['rooms_occupied'] > high_threshold).astype(int)
-                prediction_df['is_low_occupation'] = (prediction_df['rooms_occupied'] < low_threshold).astype(int)
-                
-                # Interaction between temperature and occupancy
-                if 'temperature' in prediction_df.columns:
-                    prediction_df['temp_occupation_interaction'] = prediction_df['temperature'] * prediction_df['rooms_occupied']
-            
-            # 7. Convert object columns to numeric codes
-            object_columns = model_info.get('object_columns', [])
-            for col in object_columns:
-                if col in prediction_df.columns:
-                    # If column has few or no unique values
-                    if prediction_df[col].nunique() <= 1:
-                        prediction_df[col] = 0
-                    else:
-                        prediction_df[col] = prediction_df[col].astype('category').cat.codes
-            
-            # 8. Clean up temporary date if it exists
-            if 'date' in prediction_df.columns:
-                prediction_df = prediction_df.drop(columns=['date'])
-            
-            # 9. Check that all necessary features are present
-            pipeline = model_info['model']
-            model_features = [col for col in pipeline.feature_names_in_ if col != 'consumption']
-            missing_features = [feat for feat in model_features if feat not in prediction_df.columns]
-            
-            if missing_features:
-                print(f"Warning: {len(missing_features)} features are missing for prediction:")
-                for feat in missing_features[:10]:  # Show the first 10
-                    print(f"  - {feat}")
-                
-                # Add missing features with zeros
-                for feat in missing_features:
-                    prediction_df[feat] = 0
-            
-            # 10. Ensure columns are in the right order
-            available_features = [col for col in model_features if col in prediction_df.columns]
-            prediction_X = prediction_df[available_features]
-            
-            # 11. Make hourly predictions
-            hourly_predictions = pipeline.predict(prediction_X)
-            
-            # 12. Create hourly results
-            hourly_results = pd.DataFrame({
-                'predicted_consumption': hourly_predictions
-            }, index=prediction_df.index)
-            
-            results = {}
-            
-            # Add hourly results if requested
-            if aggregate in ['hourly', 'both']:
-                results['hourly'] = hourly_results
-            
-            # CORRECTION: Add daily results if requested
-            if aggregate in ['daily', 'both']:
-                # Ensure index is a DatetimeIndex
-                if not isinstance(hourly_results.index, pd.DatetimeIndex):
-                    print("Converting index to DatetimeIndex for daily aggregation...")
-                    try:
-                        # Try to convert index to DatetimeIndex
-                        hourly_results = hourly_results.copy()
-                        hourly_results.index = pd.to_datetime(hourly_results.index)
-                    except Exception as e:
-                        print(f"Error during conversion: {e}")
-                        # Create artificial time index in case of failure
-                        start_dt = pd.Timestamp(start_date)
-                        hourly_results.index = pd.date_range(start=start_dt, periods=len(hourly_results), freq='h')
-                        print(f"Artificial time index created: {hourly_results.index[0]} to {hourly_results.index[-1]}")
-                
-                # Use resample for daily aggregation (more robust method)
-                print("Index type before resample:", type(hourly_results.index))
-                print("Index preview:", hourly_results.index[:5])  # Show first 5 values
-                daily_results = hourly_results.resample('D').sum()
-                
-                # Convert to expected format
-                daily_results = daily_results.reset_index()
-                
-                # Rename datetime column to date if needed
-                if 'datetime' in daily_results.columns:
-                    daily_results = daily_results.rename(columns={'datetime': 'date'})
-                
-                results['daily'] = daily_results
-            
-            # Add metadata
-            results['features_used'] = available_features
-            results['aggregation'] = aggregate
-            
-            return results
-            
-        except Exception as e:
-            print(f"Error generating predictions: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
     
     # 11. Save model and results if requested
     if save_outputs:
@@ -1570,10 +1760,13 @@ def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs
         }, index=hourly_eval_results['daily_data']['actual'].index)
         daily_csv_path = os.path.join(output_dir, f"daily_aggregated_{model_type}_predictions_{current_date}.csv")
         daily_results.to_csv(daily_csv_path, date_format='%Y-%m-%d')
+
+        if 'preprocess_func' in model_info:
+            del model_info['preprocess_func']
         
         # Save the model
-        model_path = os.path.join(model_dir, f"hourly_{model_type}_model_{current_date}.joblib")
-        dump(model_info['model'], model_path)
+        model_path = os.path.join(model_dir, "consumption_model.joblib")
+        dump(model_info, model_path)
         
         # Save model metadata 
         metadata = {
@@ -1614,9 +1807,13 @@ def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs
     
     # 12. Return results and prediction function
     return {
-        'model_info': model_info,
-        'hourly_evaluation': hourly_eval_results,
-        'predict_function': predict_consumption_with_aggregation,
+    'model': model_info,
+    'metrics': {
+        'hourly': hourly_eval_results['metrics'],
+        'daily': hourly_eval_results['daily_metrics']
+    },
+    'evaluation': {
+        'hourly': hourly_eval_results,
         'data': {
             'X_train': X_train,
             'y_train': y_train,
@@ -1624,81 +1821,54 @@ def run_improved_hourly_model(data_date=None, model_type='xgboost', save_outputs
             'y_test': y_test
         }
     }
+}
+
+
+def preprocess_object_columns(X, object_columns):
+    """Preprocessing for 'object' type columns"""
+    X_processed = X.copy()
+    for col in object_columns:
+        if col in X_processed.columns:
+            # If the column is empty or contains only one unique value, replace with 0
+            if X_processed[col].nunique() <= 1:
+                X_processed[col] = 0
+            # Otherwise, convert to category then to numeric codes
+            else:
+                X_processed[col] = X_processed[col].astype('category').cat.codes
+    return X_processed
 
 # Main function to run the model
 def main():
-    """
-    Main entry point.
-    """
+    
     import argparse
     
-    # Create command line argument parser
     parser = argparse.ArgumentParser(description='Improved hourly energy consumption prediction model')
     parser.add_argument('--date', type=str, default=None, 
                       help='Data date in YYYY-MM-DD format (default: current date)')
     parser.add_argument('--model', type=str, default='xgboost', choices=['xgboost', 'lightgbm', 'randomforest'],
-                      help='Model type to use (default: xgboost)')
+                      help='Type of model to use (default: xgboost)')
     parser.add_argument('--save', action='store_true', default=True,
                       help='Save results (default: True)')
     parser.add_argument('--no-save', dest='save', action='store_false',
                       help='Do not save results')
     
-    # Parse arguments
+    
     args = parser.parse_args()
     
     print(f"Configuration:")
     print(f"  Date: {args.date if args.date else 'Current'}")
     print(f"  Model: {args.model}")
     print(f"  Save: {args.save}")
+    print(f"  Future days: {args.future_days}")
+    print(f"  Generate future predictions: {args.generate_future}")
     
-    # Run the improved model
     results = run_improved_hourly_model(
         data_date=args.date,
         model_type=args.model,
-        save_outputs=args.save
+        save_outputs=args.save,
+        visualization=False
     )
     
-    # Test the prediction function
-    if results and 'predict_function' in results:
-        predict_func = results['predict_function']
-        
-        # Simple example
-        print("\nTesting prediction function with a small example...")
-        
-        # Weather and occupancy data for test
-        X_test = results['data']['X_test'].copy()
-        
-        if not X_test.empty:
-            # Take just a few days for the example
-            test_period = min(7, len(X_test) // 24)
-            test_data = X_test.iloc[:test_period*24].copy()
-            
-            # Separate weather and occupancy columns
-            weather_cols = [col for col in test_data.columns if col in ['temperature', 'humidity', 'precipitation', 'global_radiation']]
-            room_cols = [col for col in test_data.columns if 'room' in col or 'occupied' in col or 'occupation' in col]
-            
-            weather_sample = test_data[weather_cols] if weather_cols else pd.DataFrame(index=test_data.index)
-            room_sample = test_data[room_cols] if room_cols else pd.DataFrame(index=test_data.index)
-            
-            start_date = test_data.index.min().strftime('%Y-%m-%d')
-            end_date = test_data.index.max().strftime('%Y-%m-%d')
-            
-            print(f"Generating test predictions from {start_date} to {end_date}...")
-            
-            # Predict with different aggregations
-            pred_results = predict_func(weather_sample, room_sample, start_date, end_date, aggregate='both')
-            
-            if pred_results:
-                if 'hourly' in pred_results:
-                    print("\nPreview of hourly predictions:")
-                    print(pred_results['hourly'].head())
-                
-                if 'daily' in pred_results:
-                    print("\nPreview of daily predictions (aggregated):")
-                    print(pred_results['daily'].head())
-    
-    return results
-
 # Execute if called directly
 if __name__ == "__main__":
     try:
