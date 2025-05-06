@@ -37,7 +37,17 @@ if %CLEANER_ERROR% neq 0 (
 )
 echo.
 
-echo Step 3: Running ETL process...
+echo Step 3: Running prediction model...
+python data_prediction.py
+set PREDICTION_ERROR=%ERRORLEVEL%
+if %PREDICTION_ERROR% neq 0 (
+    echo Warning: Prediction model script returned error code: %PREDICTION_ERROR%
+) else (
+    echo Prediction model completed successfully.
+)
+echo.
+
+echo Step 4: Running ETL process...
 python data_ETL.py
 set ETL_ERROR=%ERRORLEVEL%
 

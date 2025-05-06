@@ -37,7 +37,9 @@ try:
     ensure_installed('joblib')
     ensure_installed('xgboost')
     ensure_installed('lightgbm')
-    
+    ensure_installed('flask')
+    ensure_installed('flask-swagger-ui')
+    ensure_installed('requests')
         
     logging.info("All dependencies are installed successfully!")
     sys.exit(0)

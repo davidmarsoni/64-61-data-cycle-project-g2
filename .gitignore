@@ -6,3 +6,5 @@ TODO.md
 
 models/*
 predictions/*
+machineLearning/api_results/*
+reports/*

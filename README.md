@@ -161,9 +161,12 @@ Then you need to run the script `data_predicton.py` in the root of the project. 
 python data_prediction.py
 ```
 
+> [!NOTE]
+> You must have started the API server before running this script. The API server is used to get the prediction of the data. You can start the API server by running the script `app.py` inside the `machineLearning` folder. This script will start the API server and listen for requests on port 5000.
+
 By lauching this script you will be able to get the result of the prediction of the data. This script will use the cleaned data to predict the data and store it in the `BASE_DIR` directory.
 
-4. Run the ETL process
+1. Run the ETL process
 
 Once the data is cleaned, you can run the script `data_ETL.py` to transform and populate the data into the database. This script will use the cleaned data and store it in the database.
 
@@ -191,3 +194,13 @@ After that you can just run the 'scheduler.bat' inside the `init` folder. This s
 ```bash
 scheduler.bat
 ```
+
+## Export the data to the SAP SAC
+
+To make the export of the data to the SAP SAC, you need to run the script `export_solar_production_data.py` in the root of the project. This script will export the data from the database to some csv files.
+
+```bash
+python export_solar_production_data.py
+```
+
+After that you can just manually upload the csv files to the SAP SAC. 
