@@ -1,0 +1,30 @@
+# Data manipulation
+pandas>=1.5.0
+numpy>=1.22.0
+
+# File management and utilities
+python-dotenv>=0.20.0
+chardet>=4.0.0
+pyodbc>=4.0.30
+keyring>=22.0.0
+
+# Network and connections
+smbprotocol>=1.9.0
+paramiko>=2.10.0
+pysmb>=1.2.0
+requests>=2.25.0
+
+# Database
+sqlalchemy>=1.4.0
+
+# Machine Learning
+scikit-learn>=1.0.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+joblib>=1.1.0
+xgboost>=1.5.0
+lightgbm>=3.3.0
+
+# Web API
+flask>=2.0.0
+flask-swagger-ui>=3.36.0
