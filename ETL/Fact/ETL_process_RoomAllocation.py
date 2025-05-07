@@ -17,7 +17,7 @@ from ETL.Dim.DimUser import get_or_create_user
 from ETL.Dim.DimActivity import get_or_create_activity
 from ETL.Dim.DimBookingType import get_or_create_booking_type
 from ETL.Dim.DimDivision import get_or_create_division
-from ETL.Dim.DimClassroom import get_or_create_classroom
+from ETL.Dim.DimClassRoom import get_or_create_classroom
 from config import Config
 from ETL.db.models import (
     DimDate, DimTime, DimRoom, DimUser, 
