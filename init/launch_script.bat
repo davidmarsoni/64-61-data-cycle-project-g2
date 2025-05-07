@@ -37,17 +37,7 @@ if %CLEANER_ERROR% neq 0 (
 )
 echo.
 
-echo Step 3: Running prediction model...
-python data_prediction.py
-set PREDICTION_ERROR=%ERRORLEVEL%
-if %PREDICTION_ERROR% neq 0 (
-    echo Warning: Prediction model script returned error code: %PREDICTION_ERROR%
-) else (
-    echo Prediction model completed successfully.
-)
-echo.
-
-echo Step 4: Running ETL process...
+echo Step 3: Running ETL process...
 python data_ETL.py
 set ETL_ERROR=%ERRORLEVEL%
 
@@ -55,6 +45,16 @@ if %ETL_ERROR% neq 0 (
     echo Warning: ETL script returned error code: %ETL_ERROR%
 ) else (
     echo ETL process completed successfully.
+)
+echo.
+
+echo Step 4: Running prediction model...
+python data_prediction.py --skip-training
+set PREDICTION_ERROR=%ERRORLEVEL%
+if %PREDICTION_ERROR% neq 0 (
+    echo Warning: Prediction model script returned error code: %PREDICTION_ERROR%
+) else (
+    echo Prediction model completed successfully.
 )
 echo.
 
@@ -69,6 +69,8 @@ if %DEP_ERROR% neq 0 (
     exit /b %CLEANER_ERROR%
 ) else if %ETL_ERROR% neq 0 (
     exit /b %ETL_ERROR%
+) else if %PREDICTION_ERROR% neq 0 (
+    exit /b %PREDICTION_ERROR%
 ) else (
     exit /b 0
 )
